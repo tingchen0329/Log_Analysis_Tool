@@ -330,5 +330,5 @@ Log 檔案中缺少對應指令的輸出。請參考 [Log 檔案準備方式](#-
 
 ## 👤 作者
 
-**TING** — Network Engineer  
+**TING CHEN** — Network Engineer  
 若有問題或建議，歡迎開 [Issue](https://github.com/你的帳號/network-log-analysis/issues) 回報。
