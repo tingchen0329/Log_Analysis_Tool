@@ -1,5 +1,11 @@
 # 版本紀錄
 
+## V21
+
+- 移除 pandas 依賴，Excel 改由 openpyxl 直接寫入（輸出逐格與 V20 相同），exe 由約 60 MB 降到約 7~10 MB、啟動更快
+- 程式註解中的範例資料全部改為假資料；Git 歷史中的 V18 同步去識別化
+- 新增 push_to_github.bat 一鍵推送
+
 ## V20
 
 - 新增 FortiGate 解析器：支援 `.conf` 備份檔與 CLI 輸出；HA 叢集兩台各一列，依序號跨檔去重

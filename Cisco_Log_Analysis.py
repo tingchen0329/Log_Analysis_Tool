@@ -19,6 +19,10 @@
 #   GUI：python Cisco_Log_Analysis.py             （或 pythonw 無黑視窗）
 #   CLI：python Cisco_Log_Analysis.py <Log資料夾> [-o 報表.xlsx]
 #
+# V21 變更摘要：
+#   1. 移除 pandas 依賴：Excel 改由 openpyxl 直接寫入，輸出內容與格式不變，exe 體積大幅縮小
+#   2. 程式註解中的範例資料全部改為假資料（序號 / MAC / IP / 主機名稱）
+#
 # V20 變更摘要：
 #   1. 新增 FortiGate 解析器：.conf 與 CLI 輸出皆可，HA 叢集兩台各一列（依序號跨檔去重）
 #   2. Aruba 加強：VSF 堆疊成員、映像版本、Uptime、重開機原因、最高溫、Port 數、NTP、Core Dump
@@ -68,7 +72,8 @@ from datetime import datetime
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 # ── 第三方函式庫 ──────────────────────────────────────────────────────────────
-import pandas as pd
+from openpyxl import Workbook
+from openpyxl.utils import get_column_letter
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
 # ── GUI（選用）：沒有 tkinter 的環境仍可使用 CLI 模式 ─────────────────────────
@@ -83,7 +88,7 @@ except ImportError:                                   # pragma: no cover
 # 1. 全域常數
 # ==============================================================================
 
-APP_VERSION = "V20"
+APP_VERSION = "V21"
 MARK = "○"                       # Stack / HA 非首列「與首列共用」標記
 
 # ── Syslog：擷取等級 0~4（保留時間戳記），並排除雜訊 ─────────────────────────
@@ -1716,13 +1721,22 @@ def analyze_folder(folder: str, log: Callable[[str], None] = print,
 # 14. Excel 輸出
 # ==============================================================================
 
-def build_sheets(devices: List[Dict], aps: List[Dict]) -> Dict[str, pd.DataFrame]:
+Sheet = Tuple[List[str], List[List[str]]]       # (欄位名稱, 資料列)
+
+
+def _table(rows: List[Dict], cols: List[str], missing: str = "") -> Sheet:
+    """dict 資料列 → 依欄位順序排好的二維表；缺值填 missing。"""
+    return cols, [[r.get(c, missing) for c in cols] for r in rows]
+
+
+def build_sheets(devices: List[Dict], aps: List[Dict]) -> Dict[str, Sheet]:
     """
     Report      ：所有設備 + AP（不含 MAC / Source File）
     AP Info     ：AP 詳細資訊 + Source File
     WLC Info    ：C9800 / AireOS（含 HA Role）+ Source File
     Switch Info ：IOS / NX-OS / C1300 / Aruba + Source File
     Aruba Info / Fortigate Info：偵測到該廠牌設備才建立，含廠牌專屬欄位
+    （V21 起不再使用 pandas：直接以 openpyxl 寫入，打包後的 exe 由約 60 MB 降到約 7~10 MB）
     """
     ap_report = [{"Hostname": a["ap_name"], "Model": a["ap_model"], "OOB IP": a["ip_address"],
                   "Serial Number": a["serial"], "Firmware Version": a["firmware"],
@@ -1732,15 +1746,15 @@ def build_sheets(devices: List[Dict], aps: List[Dict]) -> Dict[str, pd.DataFrame
                 "IP Address": a["ip_address"], "AP Serial Number": a["serial"],
                 "Software Version": a["firmware"], "Source File": a["source"]} for a in aps]
     sheets = {
-        "Report":      pd.DataFrame(devices + ap_report, columns=REPORT_COLS),
-        "AP Info":     pd.DataFrame(ap_info, columns=AP_COLS),
-        "WLC Info":    pd.DataFrame([r for r in devices if r["_device_type"] in WLC_TYPES], columns=WLC_COLS),
-        "Switch Info": pd.DataFrame([r for r in devices if r["_device_type"] in SWITCH_TYPES], columns=SWITCH_COLS),
+        "Report":      _table(devices + ap_report, REPORT_COLS),
+        "AP Info":     _table(ap_info, AP_COLS),
+        "WLC Info":    _table([r for r in devices if r["_device_type"] in WLC_TYPES], WLC_COLS),
+        "Switch Info": _table([r for r in devices if r["_device_type"] in SWITCH_TYPES], SWITCH_COLS),
     }
     for sheet, dev_type, cols in VENDOR_SHEETS:
         rows = [r for r in devices if r["_device_type"] == dev_type]
         if rows:
-            sheets[sheet] = pd.DataFrame(rows, columns=cols).fillna("N/A")
+            sheets[sheet] = _table(rows, cols, missing="N/A")
     return sheets
 
 
@@ -1760,21 +1774,28 @@ def write_excel(path: str, devices: List[Dict], aps: List[Dict]):
     thin = Side(style="thin")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-    sheets = build_sheets(devices, aps)
-    with pd.ExcelWriter(path, engine="openpyxl") as writer:
-        for name, df in sheets.items():
-            df.to_excel(writer, index=False, sheet_name=name)
-            ws = writer.sheets[name]
-            for col in ws.iter_cols():
-                width = 0
-                for cell in col:
-                    if cell.row == 1:
-                        cell.fill, cell.font, cell.alignment = header_fill, header_font, header_align
-                    else:
-                        cell.font = data_font
-                    cell.border = border
-                    width = max(width, _cell_width(cell.value))
-                ws.column_dimensions[col[0].column_letter].width = min(int(width * 1.2) + 4, 100)
+    wb = Workbook()
+    wb.remove(wb.active)                                 # 移除預設的空白工作表
+    for name, (cols, rows) in build_sheets(devices, aps).items():
+        ws = wb.create_sheet(name)
+        ws.append(cols)
+        for row in rows:
+            ws.append(row)
+            for cell in ws[ws.max_row]:
+                if isinstance(cell.value, str) and cell.value.startswith("="):
+                    cell.data_type = "s"                 # 以 "=" 開頭的 Log 文字不可被當成公式
+        widths = [_cell_width(c) for c in cols]
+        for r_idx, row_cells in enumerate(ws.iter_rows(), 1):
+            for c_idx, cell in enumerate(row_cells):
+                if r_idx == 1:
+                    cell.fill, cell.font, cell.alignment = header_fill, header_font, header_align
+                else:
+                    cell.font = data_font
+                    widths[c_idx] = max(widths[c_idx], _cell_width(cell.value))
+                cell.border = border
+        for c_idx, w in enumerate(widths):
+            ws.column_dimensions[get_column_letter(c_idx + 1)].width = min(int(w * 1.2) + 4, 100)
+    wb.save(path)
 
 
 def default_report_name() -> str:

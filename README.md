@@ -4,7 +4,7 @@
 
 ![Python](https://img.shields.io/badge/Python-3.8%2B-blue?logo=python)
 ![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey?logo=windows)
-![Version](https://img.shields.io/badge/Version-V20-green)
+![Version](https://img.shields.io/badge/Version-V21-green)
 
 ---
 
@@ -38,12 +38,12 @@
 
 ### 方式一：直接執行 exe（一般使用者，免安裝 Python）
 
-到 [Releases](https://github.com/tingchen0329/Log_Analysis_Tool/releases) 下載 `Log_Analysis_Tool.exe`，雙擊執行即可。
+到 [Releases](https://github.com/tingchen0329/Log_Analysis_Tool/releases) 下載 `Log_Analysis_Tool.exe`（約 7~10 MB），雙擊執行即可。
 
 ### 方式二：Python 執行（開發者）
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt          # 只需要 openpyxl
 python Cisco_Log_Analysis.py                       # GUI
 python Cisco_Log_Analysis.py <Log資料夾> -o 報表.xlsx  # CLI 批次模式
 ```
@@ -131,13 +131,14 @@ Cisco_Log_Analysis.py        主程式（單一檔案）
 tests/test_parsers.py        單元測試
 tests/fixtures/              合成測試 Log（不含客戶資料）
 build_exe.bat                Windows 打包腳本
+push_to_github.bat           一鍵 commit / tag / 推送
 .github/workflows/build.yml  CI：push 跑測試；推送 v* tag 自動打包 exe 並建立 Release
 ```
 
 ```bash
 python -m unittest discover -s tests -v     # 執行測試
 
-git tag v21 && git push origin main --tags  # 發佈新版本（GitHub Actions 自動產出 exe）
+git tag -a v22 -m v22 && git push origin main --follow-tags   # 發佈新版本（GitHub Actions 自動產出 exe）
 ```
 
 > ⚠️ 本 Repo 為公開專案，`.gitignore` 已排除 `*.log` / `*.conf` / `*.txt` / `*.xlsx`，請勿提交客戶 Log 或報表。
