@@ -2,7 +2,7 @@
 # Design By Ting Chen
 # Cisco_Log_Analysis.py
 #
-# 功能：讀取 Cisco / Aruba 設備 Log 檔案，解析設備資訊並彙整輸出成 Excel 報表。
+# 功能：讀取 Cisco / Aruba / FortiGate 設備 Log 檔案，解析設備資訊並彙整輸出成 Excel 報表。
 #
 # 支援設備：
 #   - Cisco C9800 WLC / EWC（IOS-XE，含 HA SSO 雙機判定）
@@ -10,13 +10,20 @@
 #   - Catalyst IOS / IOS-XE Switch（C2960 / C1000 / C3850 / C9K，含 Stack 堆疊）
 #   - Cisco Nexus NX-OS（N5K / N9K）
 #   - Cisco Catalyst 1300（show tech-support 彙整格式）
-#   - Aruba / HPE AOS-CX Switch（6300 / 6400）
+#   - Aruba / HPE AOS-CX Switch（6300 / 6400，含 VSF 堆疊）
+#   - Fortinet FortiGate（FortiOS：.conf 備份檔或 CLI 輸出，含 HA 叢集）
 #   - WLC 底下的 AP（C9800：show ap summary + show ap config general；
 #                    AireOS：show ap join stats summary all + show ap inventory all）
 #
 # 使用方式：
 #   GUI：python Cisco_Log_Analysis.py             （或 pythonw 無黑視窗）
 #   CLI：python Cisco_Log_Analysis.py <Log資料夾> [-o 報表.xlsx]
+#
+# V20 變更摘要：
+#   1. 新增 FortiGate 解析器：.conf 與 CLI 輸出皆可，HA 叢集兩台各一列（依序號跨檔去重）
+#   2. Aruba 加強：VSF 堆疊成員、映像版本、Uptime、重開機原因、最高溫、Port 數、NTP、Core Dump
+#   3. Excel：偵測到 Aruba / FortiGate 時，自動多建「Aruba Info」「Fortigate Info」分頁
+#   4. 副檔名新增 .conf（FortiGate 備份檔）
 #
 # V19 變更摘要：
 #   1. C9800 HA SSO 判定
@@ -56,7 +63,7 @@ import sys
 import threading
 import time
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
@@ -76,7 +83,7 @@ except ImportError:                                   # pragma: no cover
 # 1. 全域常數
 # ==============================================================================
 
-APP_VERSION = "V19"
+APP_VERSION = "V20"
 MARK = "○"                       # Stack / HA 非首列「與首列共用」標記
 
 # ── Syslog：擷取等級 0~4（保留時間戳記），並排除雜訊 ─────────────────────────
@@ -139,6 +146,9 @@ CLI_ERROR_RE = re.compile(
 )
 
 NXOS_BANNER = "Cisco Nexus Operating System (NX-OS) Software"
+# FortiGate 提示符：「FGT-HQ # get system status」或 VDOM 內「FGT-HQ (global) # …」
+FGT_PROMPT_RE = re.compile(r"^([A-Za-z0-9][\w.\-]{0,62})(?: \([\w\-]+\))? [#$] ", re.M)
+NO_MATCH_RE = re.compile(r"\A(?!)(?P<cmd>)")   # 沒有任何提示符時用的空索引
 DETECT_WINDOW = 2_000_000        # 類型 / 提示符偵測只看前 2 MB（提示符一定在開頭附近出現）
 IPV4 = r"\d{1,3}(?:\.\d{1,3}){3}"
 
@@ -161,6 +171,16 @@ SWITCH_COLS = ["Hostname", "Model", "OOB IP", "Ethernet MAC", "Serial Number",
 WLC_COLS = SWITCH_COLS[:1] + ["HA Role"] + SWITCH_COLS[1:]
 AP_COLS = ["AP Name", "AP Model", "Ethernet MAC", "IP Address", "AP Serial Number",
            "Software Version", "Source File"]
+# 偵測到設備才會建立的廠牌專屬分頁
+ARUBA_COLS = ["Hostname", "VSF Role", "Part Number", "Description", "Serial Number", "OOB IP",
+              "Ethernet MAC", "Firmware Version", "Active Image", "Primary Image", "Secondary Image",
+              "Uptime", "Last Reboot", "CPU Usage", "Memory Usage", "Max Temperature", "Fan Status",
+              "Power Status", "Ports Up/Total", "NTP Status", "Core Dumps", "System Log", "Source File"]
+FORTIGATE_COLS = ["Hostname", "HA Role", "Model", "Serial Number", "OOB IP", "Firmware Version",
+                  "Operation Mode", "Uptime", "Last Reboot", "CPU Usage", "Memory Usage", "Sessions",
+                  "Fan Status", "Power Status", "HA Status", "System Log", "Source File"]
+VENDOR_SHEETS = (("Aruba Info", "Aruba", ARUBA_COLS), ("Fortigate Info", "FortiGate", FORTIGATE_COLS))
+ACTIVE_ROLES = ("active", "primary", "master", "conductor")   # HA / 堆疊中排第一列的角色
 
 
 # ==============================================================================
@@ -357,6 +377,7 @@ class Unit:
     ha_state: str = ""            # HA 狀態（Active / Standby Hot…），非 HA 為空字串
     rmi_ip: str = ""              # C9800 RMI IP（redun-management）
     is_local: bool = True         # False = HA 對端機箱（本 Log 看不到它的 CPU / Memory）
+    extra: Dict[str, str] = field(default_factory=dict)   # 該台專屬欄位（例：VSF Role），覆蓋設備層級值
 
 
 @dataclass
@@ -430,6 +451,7 @@ class BaseParser:
         self.fan_status = "正常"
         self.pwr_status = "正常"
         self.syslog = ""
+        self.extra: Dict[str, str] = {}           # 廠牌專屬欄位（Aruba Info / Fortigate Info）
         self.idx = index or self._build_index()
         self._tech_idx: Optional[CommandIndex] = None
         self.ver_sec = self.cmd("show version")
@@ -452,7 +474,7 @@ class BaseParser:
     def run_all(self) -> "BaseParser":
         for step in (self._parse_hostname, self._parse_oob, self._parse_firmware,
                      self._parse_cpu, self._parse_memory, self._parse_inventory,
-                     self._parse_env, self._parse_syslog, self._parse_eth_mac):
+                     self._parse_env, self._parse_syslog, self._parse_eth_mac, self._parse_extra):
             step()
         self.info.unit_count = max(len(self.units), 1)
         return self
@@ -558,6 +580,7 @@ class BaseParser:
     def _parse_memory(self): pass
     def _parse_inventory(self): pass
     def _parse_env(self): pass
+    def _parse_extra(self): pass
 
     def _parse_syslog(self):
         """
@@ -604,8 +627,8 @@ class BaseParser:
             return []
         if self.info.is_ha:
             kind = "ha"
-            group = "HA:" + "|".join(sorted(mac_key(u.eth_mac) or self.source for u in units))
-            order_of = lambda u: (0 if u.ha_state.lower().startswith("active") else 1, u.member_id)
+            group = "HA:" + "|".join(sorted(self._unit_key(u) or self.source for u in units))
+            order_of = lambda u: (0 if u.ha_state.lower().startswith(ACTIVE_ROLES) else 1, u.member_id)
         else:
             kind, group = "stack", f"FILE:{self.source}:{id(self)}"
             order_of = lambda u: (0, u.member_id)
@@ -614,8 +637,11 @@ class BaseParser:
         rows = []
         for i, u in enumerate(units):
             first = (i == 0)
-            mac = u.eth_mac if u.eth_mac != "N/A" else (self.info.eth_mac if first else MARK)
-            rows.append({
+            if self.info.is_ha:
+                mac = u.eth_mac
+            else:
+                mac = u.eth_mac if u.eth_mac != "N/A" else (self.info.eth_mac if first else MARK)
+            row = {
                 "Hostname":         self.info.hostname,
                 "HA Role":          self._ha_role_text(u),
                 "Model":            u.model,
@@ -633,10 +659,18 @@ class BaseParser:
                 "_group":           group,
                 "_kind":            kind,
                 "_order":           order_of(u),
-                "_ha_key":          mac_key(u.eth_mac) if self.info.is_ha else "",
+                "_ha_key":          self._unit_key(u) if self.info.is_ha else "",
                 "_ha_local":        u.is_local,
-            })
+            }
+            row.update(self.extra)
+            row.update(u.extra)
+            rows.append(row)
         return rows
+
+    @staticmethod
+    def _unit_key(u: Unit) -> str:
+        """HA 成員的跨檔去重鍵：機箱 MAC（C9800），沒有 MAC 時用序號（FortiGate）。"""
+        return mac_key(u.eth_mac) or (u.serial if u.serial not in ("Unknown", "N/A", "") else "")
 
 
 # ==============================================================================
@@ -1083,18 +1117,32 @@ class AireOSParser(BaseParser):
 
 
 # ==============================================================================
-# 10. Aruba / HPE AOS-CX 解析器（6300 / 6400）
+# 10. Aruba / HPE AOS-CX 解析器（6300 / 6400，含 VSF 堆疊）
 # ==============================================================================
 
 class ArubaParser(BaseParser):
     """
     AOS-CX show tech：區塊邊界為「*****\\nCommand : show X\\n*****」。
+
+    Switch Info（與 Cisco 共用欄位）：
       Hostname / 型號 / 序號 / CPU / Memory / MAC → show system
       韌體 → show version（去除 FL. 前綴）；管理 IP → interface mgmt 的 ip static
+    Aruba Info（Aruba 專屬欄位）：
+      VSF Role             → show vsf（Conductor / Standby / Member / Not Present），無 VSF = Standalone
+      Part Number / Description → show system 的 Product Name、show module
+      Active / Primary / Secondary Image → show version、show images
+      Uptime / Last Reboot → show system 的 Up Time、show boot-history 上一次開機原因
+      Max Temperature      → show environment 溫度表最高值
+      Ports Up/Total       → show interface brief；NTP → show ntp status；Core Dumps → show core-dump all
     """
 
     DEVICE_TYPE = "Aruba"
     TECH_FALLBACK = False
+    # show vsf 成員表：「1 aa:bb:cc:00:00:01 JL666A Conductor」；不在位的成員沒有 MAC：「4 JL662A Not Present」
+    VSF_ROW_RE = re.compile(
+        r"^[ \t]*(\d+)[ \t]+(?:((?:[0-9a-f]{2}:){5}[0-9a-f]{2})[ \t]+)?([A-Z0-9]{5,7})[ \t]*([^\n]*?)[ \t]*$",
+        re.M | re.I,
+    )
 
     def __init__(self, content: str, source: str = "", index: Optional[CommandIndex] = None):
         super().__init__(content, source, index)
@@ -1115,6 +1163,12 @@ class ArubaParser(BaseParser):
 
     def _parse_firmware(self):
         self.info.firmware = rsearch(r"Version\s*:\s*(?:\w+\.)?([\d.]+)", self.ver_sec, flags=0, default="Unknown")
+        images = self.cmd("show images")
+        self.extra.update({
+            "Active Image":    rsearch(r"^Active Image\s*:\s*(\S+)", self.ver_sec, default="N/A"),
+            "Primary Image":   rsearch(r"Primary Image\s*\n-+\s*\nVersion\s*:\s*(\S+)", images, default="N/A"),
+            "Secondary Image": rsearch(r"Secondary Image\s*\n-+\s*\nVersion\s*:\s*(\S+)", images, default="N/A"),
+        })
 
     def _parse_cpu(self):
         val = rsearch(r"CPU Util\s*\(%\s*avg\s*5\s*min\)\s*:\s*(\d+)", self.sys_sec, flags=0)
@@ -1125,12 +1179,42 @@ class ArubaParser(BaseParser):
         self.info.memory = f"Usage: {val}%" if val else "N/A"      # AOS-CX 只提供百分比
 
     def _parse_inventory(self):
-        """型號取 Product Name 前三段（JL667A 6300F 48G），其餘為 uplink 規格描述。"""
-        name = rsearch(r"Product Name\s*:\s*([^\r\n]+)", self.sys_sec, flags=0)
-        parts = name.split() if name else []
+        """
+        型號：Product Name 前三段（JL667A 6300F 48G），與 V19 Switch Info 相同；
+        VSF：show vsf 有兩台以上成員即視為堆疊，每台一列（序號由 show module 對應）。
+        """
+        name = rsearch(r"Product Name\s*:\s*([^\r\n]+)", self.sys_sec, flags=0) or ""
+        parts = name.split()
         pid = " ".join(parts[:3]) if len(parts) >= 3 else (name or "Unknown-Aruba")
         sn = rsearch(r"Chassis Serial Nbr\s*:\s*(\S+)", self.sys_sec, flags=0, default="Unknown")
-        self.units.append(Unit(1, pid, sn))
+        self.extra.update({"Part Number": parts[0] if parts else "N/A",
+                           "Description": " ".join(parts[1:]) or "N/A",
+                           "VSF Role": "Standalone"})
+
+        # show module：「1/1  JL667A  6300F 48G 4SFP56 Sw   SG00TEST01 Ready」→ 成員編號: (料號, 描述, 序號)
+        modules: Dict[int, Tuple[str, str, str]] = {}
+        for n, part, desc, serial, _status in re.findall(
+                r"^(\d+)/\d+\s+(\S+)\s+(.+?)\s{2,}(\S+)\s+(\S+)\s*$", self.cmd("show module"), re.M):
+            modules.setdefault(int(n), (part, desc.strip(), serial))
+
+        vsf = self.cmd("show vsf")
+        table = re.split(r"^-{3}[- ]*$", vsf, maxsplit=1, flags=re.M)
+        members = self.VSF_ROW_RE.findall(table[1]) if len(table) > 1 else []
+        if len(members) < 2:
+            self.units.append(Unit(1, pid, sn))
+            return
+
+        self.info.is_stack = True
+        for num, mac, sku, status in members:
+            n = int(num)
+            part, desc, m_sn = modules.get(n, (sku, "", "Unknown"))
+            model = " ".join([part] + desc.split()[:2]) if desc else sku
+            self.units.append(Unit(
+                member_id=n, model=model, serial=m_sn if status.lower() != "not present" else "N/A",
+                eth_mac=mac_format(mac, upper=False) if mac else "N/A",
+                extra={"VSF Role": status or "Unknown", "Part Number": part,
+                       "Description": desc or "N/A"},
+            ))
 
     def _parse_env(self):
         bad = re.compile(r"\b(FAIL|FAULT|ALARM|ERROR|ABSENT|CRITICAL)\b", re.I)
@@ -1140,12 +1224,41 @@ class ArubaParser(BaseParser):
         self.fan_status = "異常" if bad.search(fan) else "正常"
         self.pwr_status = "異常" if bad.search(psu) else "正常"
 
+        # 溫度表：「1/1-CPU   management-module   45.75 C   normal」→ 取最高溫，非 normal 另外標示
+        temps = re.findall(r"^(\S+)\s+\S+-module\s+([\d.]+)\s*C\s+(\S+)", self.env_sec, re.M)
+        if temps:
+            sensor, value, status = max(temps, key=lambda t: float(t[1]))
+            abnormal = [t[0] for t in temps if t[2].lower() != "normal"]
+            text = f"{float(value):.1f} C（{sensor}）"
+            self.extra["Max Temperature"] = text + (f"｜異常：{', '.join(abnormal)}" if abnormal else "")
+
     def _parse_eth_mac(self):
         """HPE 格式「aabbcc-000001」與標準格式皆轉為 aa:bb:cc:00:00:01。"""
         raw = rsearch(r"Base\s+MAC\s+Address\s*[:\s]+([0-9a-fA-F:.]{11,17}|[0-9a-fA-F]{6}-[0-9a-fA-F]{6})",
                       self.sys_sec)
         if raw:
             self.info.eth_mac = mac_format(raw, upper=False) if mac_key(raw) else raw
+
+    def _parse_extra(self):
+        """Aruba Info 的維運狀態欄位（Uptime / 重開機原因 / Port / NTP / Core Dump）。"""
+        uptime = rsearch(r"^Up Time\s*:\s*(.+?)\s*$", self.sys_sec)
+        # show boot-history：第一筆非「Switch boot count」的時間 + 原因，即上一次開機原因
+        reboot = re.search(r"^(\d{2} \w{3} \d{2} [\d:]+)\s*:\s*(?!Switch boot count)([^,\n]+)",
+                           self.cmd("show boot-history"), re.M)
+        ports = re.findall(r"^\d+/\d+/\d+\s+\S+\s+\S+\s+\S+\s+(?:yes|no)\s+(up|down)\b",
+                           self.cmd("show interface brief"), re.M)
+        ntp = self.cmd("show ntp status")
+        ntp_state = rsearch(r"^NTP\s*:\s*(\S+)", ntp)
+        synced = "Not synchronized" if re.search(r"Not synchronized", ntp, re.I) else (
+            rsearch(r"(Synchronized to[^\n]*)", ntp) or "")
+        cores = rsearch(r"Total number of core dumps\s*:\s*(\d+)", self.cmd("show core-dump all"))
+        self.extra.update({
+            "Uptime":         uptime or "N/A",
+            "Last Reboot":    f"{reboot.group(1)}｜{reboot.group(2).strip()}" if reboot else "N/A",
+            "Ports Up/Total": f"{ports.count('up')} / {len(ports)}" if ports else "N/A",
+            "NTP Status":     "｜".join(x for x in (ntp_state, synced) if x) or "N/A",
+            "Core Dumps":     cores if cores is not None else "N/A",
+        })
 
     def _parse_syslog(self):
         """
@@ -1162,6 +1275,173 @@ class ArubaParser(BaseParser):
                 ts = rsearch(r"^(\d{4}-\d{2}-\d{2}T\S+)", line, default="")
                 entries.append((ts, m.group(1)))
         self.syslog = merge_syslog(entries, ARUBA_SYSLOG_KEEP)
+
+
+# ==============================================================================
+# 10-1. FortiGate 解析器（FortiOS，含 HA 叢集）
+# ==============================================================================
+
+class FortigateParser(BaseParser):
+    """
+    FortiGate 支援兩種來源，可同時存在於同一份檔案：
+      A. 備份設定檔 .conf：首行「#config-version=FG100F-7.2.8-FW-build1639-…」，
+         config system global（hostname）、config system interface（管理 IP）
+      B. CLI 輸出（提示符「FGT # 」或「FGT (global) # 」）：
+         get system status            → Hostname / 型號 / 版本 / 序號 / 運作模式 / HA 模式 / 重開機原因
+         get system performance status → CPU（100 − idle）/ Memory / Sessions / Uptime
+         get system ha status         → HA 成員（Primary / Secondary + 序號）、健康與同步狀態
+         execute sensor list          → 風扇 / 電源（alarm≠0 即異常）
+         execute log display          → level 為 emergency ~ warning 的事件（對應 Syslog 0~4）
+    .conf 本身沒有 CPU / 風扇 / 電源資訊，這些欄位會顯示 N/A（而不是假設「正常」）。
+    """
+
+    DEVICE_TYPE = "FortiGate"
+    TECH_FALLBACK = False
+    LOG_LEVELS = ("emergency", "alert", "critical", "error", "warning")
+    ROLE_NAMES = {"master": "Primary", "slave": "Secondary", "primary": "Primary", "secondary": "Secondary"}
+
+    def __init__(self, content: str, source: str = "", index: Optional[CommandIndex] = None):
+        super().__init__(content, source, index)
+        self.status = self.cmd("get system status")
+        self.perf = self.cmd("get system performance status")
+        self.ha = self.cmd("get system ha status")
+        self.sensor = self.cmd("execute sensor list")
+        self.model = "Unknown"
+
+    def _build_index(self) -> CommandIndex:
+        hosts = Counter(FGT_PROMPT_RE.findall(self.content, 0, DETECT_WINDOW))
+        if not hosts:
+            return CommandIndex(self.content, NO_MATCH_RE)
+        host = hosts.most_common(1)[0][0]
+        header = re.compile(rf"^{re.escape(host)}(?: \([\w\-]+\))? [#$][ \t]*(?P<cmd>[^\n]*)", re.M)
+        return CommandIndex(self.content, header, prompt_host=host)
+
+    def _cfg_block(self, name: str) -> str:
+        """取頂層「config <name> … end」區塊（巢狀的 end 有縮排，不會誤判結尾）。"""
+        return rsearch(rf"^config {re.escape(name)}[ \t]*\n(.*?)^end\b", self.content,
+                       flags=re.M | re.S, default="")
+
+    def _parse_hostname(self):
+        self.info.hostname = (rsearch(r"^Hostname:\s*(\S+)", self.status)
+                              or rsearch(r'^\s*set hostname "?([^"\n]+)"?', self._cfg_block("system global"))
+                              or self.idx.prompt_host or "Unknown")
+
+    def _parse_oob(self):
+        """檔名 IP（有設定在介面上）→ mgmt 介面 → 開放 https/ssh 管理的介面 → 第一個有 IP 的介面。"""
+        ifaces = []
+        for name, body in re.findall(r'^\s*edit "([^"]+)"\s*\n(.*?)^\s*next\b',
+                                     self._cfg_block("system interface"), re.M | re.S):
+            ip = rsearch(rf"set ip ({IPV4})\s+{IPV4}", body)
+            if ip and ip != "0.0.0.0":
+                ifaces.append((name, ip, rsearch(r"set allowaccess (.+)", body, default="")))
+        configured = {ip for _, ip, _ in ifaces}
+        pick = (next((ip for ip in ips_in_text(self.source) if ip in configured), None)
+                or next((ip for name, ip, _ in ifaces if name.lower().startswith("mgmt")), None)
+                or next((ip for _, ip, acc in ifaces if re.search(r"\b(https|ssh)\b", acc)), None)
+                or next((ip for _, ip, _ in ifaces), None))
+        if pick:
+            self.info.oob_ip = pick
+
+    def _parse_firmware(self):
+        m = re.search(r"^Version:\s*(Forti\S+)\s+(v[\d.]+),build(\d+)", self.status, re.M)
+        if m:
+            self.model, self.info.firmware = m.group(1), f"{m.group(2)} build{m.group(3)}"
+        else:
+            m = re.search(r"^#config-version=([A-Z0-9]+)-([\d.]+)-FW-build(\d+)", self.content, re.M)
+            if m:
+                self.model, self.info.firmware = m.group(1), f"v{m.group(2)} build{m.group(3)}"
+        mode = rsearch(r"^Current HA mode:\s*(.+?)\s*$", self.status)
+        self.info.ha_role = "Standalone" if not mode or mode.lower() == "standalone" else f"HA ({mode})"
+        self.extra.update({
+            "Operation Mode": rsearch(r"^Operation Mode:\s*(\S+)", self.status, default="N/A"),
+            "Last Reboot":    rsearch(r"^Last reboot reason:\s*(.+?)\s*$", self.status, default="N/A"),
+            "HA Status":      self.info.ha_role,
+        })
+
+    def _parse_cpu(self):
+        idle = rsearch(r"^CPU states:.*?(\d+)% idle", self.perf)
+        self.info.cpu = f"{100 - int(idle)}%" if idle else "N/A"
+
+    def _parse_memory(self):
+        m = re.search(r"Memory:\s*(\d+)k total,\s*(\d+)k used \(([\d.]+)%\),\s*(\d+)k free", self.perf)
+        if m:
+            t, u, pct, f = m.groups()
+            self.info.memory = self.format_mem(f"{t}K", f"{u}K", f"{f}K", pct)
+        self.extra.update({
+            "Uptime":   rsearch(r"^Uptime:\s*(.+?)\s*$", self.perf, default="N/A"),
+            "Sessions": (lambda s: f"{s}（1 分鐘平均）" if s else "N/A")(
+                rsearch(r"^Average sessions:\s*(\d+) sessions in 1 minute", self.perf)),
+        })
+
+    def _parse_inventory(self):
+        """單機一列；get system ha status 列出兩台以上成員時，每台一列（依序號跨檔去重）。"""
+        serial = rsearch(r"^Serial-Number:\s*(\S+)", self.status, default="Unknown")
+        if self.model == "Unknown":
+            self.model = rsearch(r"^Model name:\s*(\S+)", self.cmd("get hardware status"), default="Unknown")
+
+        members = re.findall(r"^(Primary|Secondary|Master|Slave)\s*:\s*([^,\n]+?)\s*,\s*([A-Z0-9]+)\s*,"
+                             r"\s*HA cluster index\s*=\s*(\d+)", self.ha, re.M | re.I)
+        if len(members) < 2:
+            self.units.append(Unit(1, self.model, serial))
+            return
+
+        self.info.is_ha = True
+        health = rsearch(r"^HA Health Status:\s*(.+?)\s*$", self.ha, default="N/A")
+        # Configuration Status：「FG100FTK19000001(updated 3 seconds ago): in-sync」（限同一行，
+        # 避免誤抓 System Usage stats 區段同樣格式、但冒號後換行的那幾行）
+        sync = dict(re.findall(r"^[ \t]*([A-Z0-9]+)[ \t]*\(updated[^)\n]*\)[ \t]*:[ \t]*(in-sync|out-of-sync)\b",
+                               self.ha, re.M | re.I))
+        for role, _name, sn, index in members:
+            local = sn == serial
+            extra = {"HA Status": f"{health}｜{sync.get(sn, 'N/A')}"}
+            if not local:                       # 對端的硬體感測只能從它自己的 Log 取得
+                extra.update({"Fan Status": "N/A", "Power Status": "N/A"})
+            self.units.append(Unit(member_id=int(index) + 1, model=self.model, serial=sn,
+                                   ha_state=self.ROLE_NAMES.get(role.lower(), role.title()),
+                                   is_local=local, extra=extra))
+
+    def _parse_env(self):
+        """execute sensor list：alarm≠0 或 LOST / FAIL 視為異常；沒有感測資料時顯示 N/A。"""
+        if not self.sensor:
+            self.fan_status = self.pwr_status = "N/A"
+            return
+        fan_bad = pwr_bad = False
+        for line in self.sensor.splitlines():
+            alarm = rsearch(r"alarm=(\d+)", line)
+            if not ((alarm and alarm != "0") or re.search(r"\b(LOST|FAIL\w*|FAULT\w*)\b", line, re.I)):
+                continue
+            is_fan = bool(re.search(r"fan", line, re.I))
+            is_pwr = bool(re.search(r"\bPS\d|PSU|VIN|VOUT|POWER|PWR", line, re.I))
+            fan_bad |= is_fan or not is_pwr
+            pwr_bad |= is_pwr or not is_fan
+        self.fan_status = "異常" if fan_bad else "正常"
+        self.pwr_status = "異常" if pwr_bad else "正常"
+
+    def _parse_syslog(self):
+        """
+        execute log display 的 key=value 事件，只收 emergency ~ warning：
+          2024-05-01 10:00:00 [warning] logdesc: msg
+        FortiOS 預設由新到舊列出，因此先依日期時間排序（ISO 格式可直接字串排序）再合併。
+        """
+        entries = []
+        for m in re.finditer(r"^[^\n]*?\bdate=(\d{4}-\d{2}-\d{2})\s+time=(\d{2}:\d{2}:\d{2})[^\n]*",
+                             self.content, re.M):
+            line = m.group(0)
+            level = rsearch(r'\blevel="?(\w+)"?', line, default="").lower()
+            if level not in self.LOG_LEVELS:
+                continue
+            desc = rsearch(r'\blogdesc="([^"]*)"', line, default="")
+            msg = rsearch(r'\bmsg="([^"]*)"', line, default="")
+            text = f"[{level}] " + (": ".join(x for x in (desc, msg) if x) or line.strip())
+            entries.append((f"{m.group(1)} {m.group(2)}", text))
+        entries.sort(key=lambda e: e[0])
+        self.syslog = merge_syslog(entries, SYSLOG_KEEP)
+
+    def _parse_eth_mac(self):
+        pass                                     # FortiOS 預設指令無機身 MAC，維持 N/A
+
+    def _ha_role_text(self, u: Unit) -> str:
+        return u.ha_state or self.info.ha_role or "Standalone"
 
 
 # ==============================================================================
@@ -1261,6 +1541,7 @@ PARSERS: Dict[str, type] = {
     "WLC":    WLCParser,
     "AireOS": AireOSParser,
     "Aruba":  ArubaParser,
+    "FortiGate": FortigateParser,
     "C1300":  C1300Parser,
 }
 PROMPT_BASED = (IOSSwitchParser, NexusParser, WLCParser)   # 可共用 detect 階段建好的提示符索引
@@ -1273,6 +1554,7 @@ def detect_type(content: str) -> Tuple[str, Optional[CommandIndex]]:
       1. AireOS : 行首「(xxx) >」提示符出現 ≥ 2 次
                   （V18 只要全文含 RTOS Version 就判定，CDP 鄰居是 AireOS WLC 的交換器會被誤判）
       2. Aruba  : 含「AOS-CX」且有「Command : show」區塊
+      2-1. FortiGate : 首行「#config-version=FG…」（.conf）或「Version: FortiGate-…」（get system status）
       3. NX-OS  : 開頭 3000 字元內有 NX-OS 登入 Banner
       4. C1300  : 含 Catalyst 1300 / PID: C1300-，且有 show tech 的「show system」區段
                   （先做便宜的字串比對，Regex 只在必要時才掃描）
@@ -1285,6 +1567,9 @@ def detect_type(content: str) -> Tuple[str, Optional[CommandIndex]]:
         return "AireOS", None
     if "AOS-CX" in content and ARUBA_SECTION_RE.search(content):
         return "Aruba", None
+    if (re.match(r"\s*#config-version=F[GW]", content[:300])
+            or re.search(r"^Version:\s*Forti(?:Gate|WiFi)", content[:DETECT_WINDOW], re.M)):
+        return "FortiGate", None
     if NXOS_BANNER in content[:3000]:
         return "NX-OS", None
     if (("Catalyst 1300" in content or re.search(r"PID:\s*C1300-", content))
@@ -1308,7 +1593,7 @@ def detect_type(content: str) -> Tuple[str, Optional[CommandIndex]]:
 # 13. 分析引擎（與 GUI 無關，可供 CLI / 測試直接呼叫）
 # ==============================================================================
 
-LOG_EXTS = (".log", ".txt")
+LOG_EXTS = (".log", ".txt", ".conf")       # .conf = FortiGate 備份設定檔
 
 
 @dataclass
@@ -1437,6 +1722,7 @@ def build_sheets(devices: List[Dict], aps: List[Dict]) -> Dict[str, pd.DataFrame
     AP Info     ：AP 詳細資訊 + Source File
     WLC Info    ：C9800 / AireOS（含 HA Role）+ Source File
     Switch Info ：IOS / NX-OS / C1300 / Aruba + Source File
+    Aruba Info / Fortigate Info：偵測到該廠牌設備才建立，含廠牌專屬欄位
     """
     ap_report = [{"Hostname": a["ap_name"], "Model": a["ap_model"], "OOB IP": a["ip_address"],
                   "Serial Number": a["serial"], "Firmware Version": a["firmware"],
@@ -1445,12 +1731,17 @@ def build_sheets(devices: List[Dict], aps: List[Dict]) -> Dict[str, pd.DataFrame
     ap_info = [{"AP Name": a["ap_name"], "AP Model": a["ap_model"], "Ethernet MAC": a["eth_mac"],
                 "IP Address": a["ip_address"], "AP Serial Number": a["serial"],
                 "Software Version": a["firmware"], "Source File": a["source"]} for a in aps]
-    return {
+    sheets = {
         "Report":      pd.DataFrame(devices + ap_report, columns=REPORT_COLS),
         "AP Info":     pd.DataFrame(ap_info, columns=AP_COLS),
         "WLC Info":    pd.DataFrame([r for r in devices if r["_device_type"] in WLC_TYPES], columns=WLC_COLS),
         "Switch Info": pd.DataFrame([r for r in devices if r["_device_type"] in SWITCH_TYPES], columns=SWITCH_COLS),
     }
+    for sheet, dev_type, cols in VENDOR_SHEETS:
+        rows = [r for r in devices if r["_device_type"] == dev_type]
+        if rows:
+            sheets[sheet] = pd.DataFrame(rows, columns=cols).fillna("N/A")
+    return sheets
 
 
 def _cell_width(value) -> int:
@@ -1816,7 +2107,7 @@ def main(argv: Optional[List[str]] = None):
         return
 
     if tk is None:
-        sys.exit("此環境沒有 tkinter，請改用 CLI：python Cisco_Log_Analysis.py <Log資料夾>")
+        sys.exit(f"此環境沒有 tkinter，請改用 CLI：python {os.path.basename(__file__)} <Log資料夾>")
     root = tk.Tk()
     CiscoParserApp(root)
     root.mainloop()

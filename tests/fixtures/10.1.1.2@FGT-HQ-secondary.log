@@ -1,0 +1,68 @@
+FGT-HQ # get system status
+Version: FortiGate-100F v7.2.8,build1639,240313 (GA.M)
+Firmware Signature: certified
+Virus-DB: 92.03345(2024-05-01 14:04)
+Serial-Number: FG100FTK19000002
+BIOS version: 05000016
+Log hard disk: Not available
+Hostname: FGT-HQ
+Operation Mode: NAT
+Current virtual domain: root
+Virtual domain configuration: disable
+Current HA mode: a-p, secondary
+Branch point: 1639
+System time: Wed May  1 15:00:00 2024
+Last reboot reason: warm reboot
+
+FGT-HQ # get system performance status
+CPU states: 1% user 0% system 0% nice 99% idle 0% iowait 0% irq 0% softirq
+CPU0 states: 3% user 1% system 0% nice 96% idle 0% iowait 0% irq 0% softirq
+Memory: 3958308k total, 1234567k used (31.2%), 2500000k free (63.2%), 223741k freeable (5.6%)
+Average network usage: 99 / 9 kbps in 1 minute, 99 / 4 kbps in 10 minutes, 102 / 21 kbps in 30 minutes
+Average sessions: 1520 sessions in 1 minute, 1490 sessions in 10 minutes, 1500 sessions in 30 minutes
+Uptime: 35 days, 4 hours, 12 minutes
+
+FGT-HQ # get system ha status
+HA Health Status: OK
+Model: FortiGate-100F
+Mode: HA A-P
+Group Name: FGT-HA
+Group ID: 0
+Debug: 0
+Cluster Uptime: 35 days 4:10:02
+Configuration Status:
+    FG100FTK19000001(updated 3 seconds ago): in-sync
+    FG100FTK19000002(updated 1 seconds ago): in-sync
+System Usage stats:
+    FG100FTK19000001(updated 3 seconds ago):
+        sessions=1520, npu-sessions=0, average-cpu-user/nice/system/idle=3%/0%/1%/96%, memory=31%
+Primary     : FGT-HQ        , FG100FTK19000001, HA cluster index = 0
+Secondary   : FGT-HQ        , FG100FTK19000002, HA cluster index = 1
+number of vcluster: 1
+vcluster 1: work 169.254.0.1
+Primary: FG100FTK19000001, HA operating index = 0
+Secondary: FG100FTK19000002, HA operating index = 1
+
+FGT-HQ # execute sensor list
+  1 +3.3V            alarm=0  value=3.3496  threshold_status=0
+ 13 PS1 VIN          alarm=0  value=231     threshold_status=0
+ 14 PS2 VIN          alarm=0  value=229     threshold_status=0
+ 20 FAN1             alarm=0  value=6600    threshold_status=0
+ 21 FAN2             alarm=0  value=6500    threshold_status=0
+
+FGT-HQ # show system interface
+config system interface
+    edit "mgmt"
+        set vdom "root"
+        set ip 10.1.1.2 255.255.255.0
+        set allowaccess ping https ssh
+        set type physical
+    next
+    edit "wan1"
+        set vdom "root"
+        set ip 203.0.113.2 255.255.255.252
+        set allowaccess ping
+        set type physical
+    next
+end
+

@@ -1,0 +1,48 @@
+WLC-HA#show version
+Cisco IOS XE Software, Version 17.09.08
+Cisco IOS Software [Cupertino], C9800 Software (C9800_IOSXE-K9), Version 17.9.8, RELEASE SOFTWARE (fc2)
+cisco C9800-L-C-K9 (KATAR) processor (revision KATAR) with 1634437K/6147K bytes of memory.
+Processor board ID FCLTEST0002
+Base Ethernet MAC Address          : AA:BB:CC:00:00:02
+WLC-HA#show inventory
+NAME: "Chassis 1", DESCR: "Cisco C9800-L-C-K9 Chassis"
+PID: C9800-L-C-K9      , VID: 02   , SN: FCLTEST0001
+
+NAME: "Chassis 2", DESCR: "Cisco C9800-L-C-K9 Chassis"
+PID: C9800-L-C-K9      , VID: 02   , SN: FCLTEST0002
+
+WLC-HA#show chassis
+Chassis/Stack Mac Address : aabb.cc00.0001 - Local Mac Address
+Chassis#   Role    Mac Address     Priority Version  State                 IP
+-------------------------------------------------------------------------------------
+ 1       Standby  aabb.cc00.0001     2      V02     Ready                169.254.10.11
+*2       Active   aabb.cc00.0002     1      V02     Ready                169.254.10.12
+
+WLC-HA#show redundancy
+                 Hardware Mode = Duplex
+     Operating Redundancy Mode = sso
+WLC-HA#show redundancy states
+       my state = 13 -ACTIVE
+     peer state = 8  -STANDBY HOT
+WLC-HA#show process cpu sorted
+CPU utilization for five seconds: 3%/0%; one minute: 1%; five minutes: 2%
+WLC-HA#show process memory platform sorted
+System memory: 15838712K total, 4801984K used, 11036728K free,
+Lowest: 10996924K
+WLC-HA#show running-config
+hostname WLC-HA
+interface Vlan10
+ ip address 10.0.0.12 255.255.255.0 secondary
+ ip address 10.0.0.10 255.255.255.0
+!
+redun-management interface Vlan10 chassis 1 address 10.0.0.11 chassis 2 address 10.0.0.12
+wireless management interface Vlan10
+WLC-HA#show logging
+Sep 16 09:33:28.228: %SWPORT-4-MAC_CONFLICT: Chassis 2 Dynamic mac 0000.1111.2222 conflict
+WLC-HA#show ap summary
+Number of APs: 1
+
+AP Name                          Slots AP Model             Ethernet MAC   Radio MAC      CC   RD   IP Address                                State        Location
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+AP-TEST-01                       2     C9130AXI-T           0011.2233.4455 0011.2233.4460 TW   -T   10.0.0.101                                Registered   default location
+WLC-HA#exit

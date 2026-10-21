@@ -1,0 +1,154 @@
+6300-VSF# show tech
+====================================================
+Show Tech executed on Mon Apr 20 13:44:09 2026
+====================================================
+
+*********************************
+Command : show version
+*********************************
+-----------------------------------------------------------------------------
+AOS-CX
+(c) Copyright 2017-2025 Hewlett Packard Enterprise Development LP
+-----------------------------------------------------------------------------
+Version      : FL.10.16.1020
+Active Image : primary
+
+*********************************
+Command : show system
+*********************************
+Hostname               : 6300-VSF
+Product Name           : JL668A 6300F 24G 4SFP56 Sw
+Chassis Serial Nbr     : SG00TEST01
+Base MAC Address       : 08:97:34:b0:0e:00
+AOS-CX Version         : FL.10.16.1020
+Up Time                : 3 weeks, 2 days, 1 hour, 5 minutes
+CPU Util (% avg 5 min) : 7
+Memory Usage (%)       : 33
+
+*********************************
+Command : show images
+*********************************
+---------------------------------------------------------------------------
+AOS-CX Primary Image
+---------------------------------------------------------------------------
+Version : FL.10.16.1020
+Size    : 790 MB
+
+---------------------------------------------------------------------------
+AOS-CX Secondary Image
+---------------------------------------------------------------------------
+Version : FL.10.13.1040
+Size    : 760 MB
+
+*********************************
+Command : show vsf
+*********************************
+Force Autojoin : Disabled
+Autojoin Eligibility Status: Not Eligible
+MAC Address : 08:97:34:b0:0e:00
+Secondary : 2
+Topology : Chain
+Status : No Split
+Split Detection Method : None
+
+Mbr MAC Address type Status
+ID
+--- ------------------- -------------- -----------------
+1 08:97:34:b0:0e:00 JL668A Conductor
+2 08:97:34:b1:43:00 JL668A Standby
+3 JL668A Not Present
+
+*********************************
+Command : show module
+*********************************
+Management Modules
+==================
+
+     Product                                        Serial
+Name Number  Description                            Number     Status
+---- ------- -------------------------------------- ---------- ----------------
+1/1  JL668A  6300F 24G 4SFP56 Sw                    SG00TEST01 Ready
+2/1  JL668A  6300F 24G 4SFP56 Sw                    SG00TEST02 Ready
+
+*********************************
+Command : show environment
+*********************************
+show environment fan
+
+Fan information
+------------------------------------------------------------------------------
+Location-      Product  Serial Number  Speed   Direction      Status  RPM
+------------------------------------------------------------------------------
+System-1/1/1   N/A      N/A            slow    left-to-back   ok      4051
+System-2/1/1   N/A      N/A            slow    left-to-back   fault   0
+
+
+
+show environment power-supply
+--------------------------------------------------------------------------------
+         Product  Serial            PSU                Input  Voltage    Wattage
+Mbr/PSU  Number   Number            Status             Type   Range      Maximum
+--------------------------------------------------------------------------------
+1/1      N/A      N/A               OK                 AC     100V-240V  200
+
+
+show environment temperature
+Temperature information
+------------------------------------------------------------------------------
+Mbr/Slot-Sensor                 Module Type        Temperature  Status
+------------------------------------------------------------------------------
+1/1-CPU                         management-module    45.75 C    normal
+2/1-CPU                         management-module    71.00 C    critical
+
+*********************************
+Command : show interface brief
+*********************************
+Port           Native  Mode   Type           Enabled Status  Reason                  Speed   Description
+--------------------------------------------------------------------------------------------------------
+1/1/1          1       access 1GbT           yes     up                              1000    uplink
+1/1/2          1       access 1GbT           yes     down    Waiting for link        --      --
+2/1/1          1       access 1GbT           yes     up                              1000    uplink2
+
+*********************************
+Command : show running-config
+*********************************
+hostname 6300-VSF
+interface mgmt
+    no shutdown
+    ip static 10.9.9.9/24
+
+*********************************
+Command : show events -s warn
+*********************************
+---------------------------------------------------
+Event logs from current boot
+---------------------------------------------------
+2026-04-16T06:26:50.526404+08:00 6300-VSF fand[1001]: Event|1203|LOG_ERR|FAN|-|Fan 2/1/1 failed
+2026-04-17T06:26:50.526404+08:00 6300-VSF fand[1001]: Event|1203|LOG_ERR|FAN|-|Fan 2/1/1 failed
+
+*********************************
+Command : show boot-history
+*********************************
+Management module
+=================
+
+Index : 1
+Current Boot, up for 23 days 1 hrs 5 mins 0 secs
+
+Index : 0
+28 Mar 26 12:00:00 : Reboot requested through user interface, Version: FL.10.16.1020
+28 Mar 26 04:00:00 : Switch boot count is 0
+
+*********************************
+Command : show ntp status
+*********************************
+NTP Status Information
+
+NTP                        : Enabled
+Synchronized to NTP Server 10.0.0.1 at stratum 3.
+
+*********************************
+Command : show core-dump all
+*********************************
+Total number of core dumps : 1
+
