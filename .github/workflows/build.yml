@@ -1,0 +1,46 @@
+# 每次 push / PR：在 Linux 跑單元測試
+# 推送版本 tag（例：git tag v20 && git push origin v20）：在 Windows 打包 exe 並建立 GitHub Release
+name: Test & Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -v
+
+  build-windows:
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements-build.txt
+      - run: pyinstaller --noconfirm --clean --onefile --windowed --name Log_Analysis_Tool Cisco_Log_Analysis.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Log_Analysis_Tool-windows
+          path: dist/Log_Analysis_Tool.exe
+      - name: 建立 Release 並附上 exe
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/Log_Analysis_Tool.exe
+          generate_release_notes: true
