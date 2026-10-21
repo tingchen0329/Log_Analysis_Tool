@@ -1,0 +1,18 @@
+# ── 公開 Repo：客戶 Log、設定檔與報表一律不提交 ──────────────────────
+*.log
+*.conf
+*.txt
+*.xlsx
+~$*
+!requirements*.txt
+# 例外：合成測試資料（無客戶資訊）
+!tests/fixtures/*
+
+# ── Python / 打包產物 ──────────────────────────────────────────────
+__pycache__/
+*.pyc
+.venv/
+venv/
+build/
+dist/
+*.spec
