@@ -1,0 +1,499 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Network Log Analysis Tool</title>
+<meta name="description" content="在瀏覽器內解析 Cisco / Aruba / FortiGate 設備 Log，產生 Excel 維護報告。Log 不會上傳到任何伺服器。">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232f75b5'/%3E%3Cpath d='M8 22V10m8 12V14m8 8V7' stroke='white' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #f3f5f8;
+    --panel: #ffffff;
+    --ink: #17212c;
+    --muted: #5a6979;
+    --line: #d8dfe7;
+    --accent: #2f75b5;
+    --accent-hover: #285f93;
+    --accent-ink: #ffffff;
+    --accent-soft: #e7f0f9;
+    --drop: #f8fafc;
+    --ok: #1d7d46;
+    --ok-soft: #e4f4ea;
+    --err: #b93a2f;
+    --err-soft: #fbe9e7;
+    --log-bg: #0f1822;
+    --log-ink: #c9dcec;
+    --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .08);
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0e1319; --panel: #161e27; --ink: #e5ecf3; --muted: #92a3b5; --line: #283442;
+      --accent: #4f97d8; --accent-hover: #67a8e2; --accent-ink: #0b1218; --accent-soft: #1a2a3b;
+      --drop: #121921; --ok: #5cc48a; --ok-soft: #15291f; --err: #ef7d71; --err-soft: #2e1916;
+      --log-bg: #0a1017; --log-ink: #bcd2e6; --shadow: none; color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0e1319; --panel: #161e27; --ink: #e5ecf3; --muted: #92a3b5; --line: #283442;
+    --accent: #4f97d8; --accent-hover: #67a8e2; --accent-ink: #0b1218; --accent-soft: #1a2a3b;
+    --drop: #121921; --ok: #5cc48a; --ok-soft: #15291f; --err: #ef7d71; --err-soft: #2e1916;
+    --log-bg: #0a1017; --log-ink: #bcd2e6; --shadow: none; color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.6 "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 16px; }
+
+  header { background: var(--panel); border-bottom: 1px solid var(--line); }
+  header .wrap { display: flex; align-items: center; gap: 12px; min-height: 60px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 17px; letter-spacing: .2px; }
+  .brand small { font-weight: 400; color: var(--muted); font-size: 13px; }
+  .pill {
+    font-size: 12px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line);
+    color: var(--muted); white-space: nowrap;
+  }
+  .pill.ready { color: var(--ok); border-color: currentColor; background: var(--ok-soft); }
+  .pill.bad { color: var(--err); border-color: currentColor; background: var(--err-soft); }
+  .spacer { flex: 1; }
+  .icon-btn {
+    border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 8px;
+    width: 36px; height: 36px; display: grid; place-items: center; cursor: pointer;
+  }
+  .icon-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  main.wrap { padding-top: 20px; padding-bottom: 28px; }
+  .notice {
+    display: flex; gap: 10px; align-items: flex-start; padding: 10px 14px; border-radius: 10px;
+    background: var(--accent-soft); color: var(--ink); font-size: 14px; margin-bottom: 16px;
+  }
+  .notice svg { flex: none; margin-top: 3px; color: var(--accent); }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow);
+    padding: 18px; margin-bottom: 16px;
+  }
+  .card h2 { margin: 0 0 12px; font-size: 16px; display: flex; align-items: center; gap: 8px; }
+  .step {
+    width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: var(--accent-ink);
+    font-size: 12px; display: grid; place-items: center; flex: none;
+  }
+
+  .drop {
+    border: 2px dashed var(--line); border-radius: 10px; background: var(--drop); padding: 26px 16px;
+    text-align: center; transition: border-color .15s, background .15s;
+  }
+  .drop.over { border-color: var(--accent); background: var(--accent-soft); }
+  .drop p { margin: 0 0 12px; }
+  .drop .hint { color: var(--muted); font-size: 13px; margin: 10px 0 0; }
+  .btn-row { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+
+  button.btn, a.btn {
+    font: inherit; border-radius: 22px; padding: 8px 18px; cursor: pointer; border: 1px solid var(--line);
+    background: var(--panel); color: var(--ink); text-decoration: none; display: inline-flex; align-items: center; gap: 8px;
+  }
+  button.btn:hover, a.btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 700; padding: 10px 28px; }
+  .btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--accent-ink); }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .btn.link { border: none; padding: 4px 8px; color: var(--muted); background: none; }
+
+  .selection { margin-top: 14px; display: none; }
+  .selection.show { display: block; }
+  .selection-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .selection-head strong { font-size: 14px; }
+  details { margin-top: 6px; }
+  summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  .files { margin: 6px 0 0; padding: 0; list-style: none; max-height: 180px; overflow: auto; font-size: 13px;
+           border: 1px solid var(--line); border-radius: 8px; }
+  .files li { padding: 4px 10px; border-bottom: 1px solid var(--line); display: flex; gap: 10px; }
+  .files li:last-child { border-bottom: none; }
+  .files li span:last-child { margin-left: auto; color: var(--muted); white-space: nowrap; }
+  .skipped { color: var(--muted); font-size: 13px; margin-top: 4px; }
+
+  .run { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .progress { flex: 1; min-width: 200px; }
+  .bar { height: 8px; background: var(--line); border-radius: 99px; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+  .status { font-size: 13px; color: var(--muted); margin-top: 6px; min-height: 1.6em; }
+
+  .log {
+    background: var(--log-bg); color: var(--log-ink); border-radius: 10px; padding: 12px 14px; height: 220px;
+    overflow: auto; font: 12.5px/1.55 Consolas, "Cascadia Mono", "SFMono-Regular", Menlo, monospace;
+    white-space: pre-wrap; word-break: break-all; margin: 0;
+  }
+  .log .err { color: #ff9b8f; }
+  .log .warn { color: #ffd27a; }
+
+  .result { display: none; }
+  .result.show { display: block; }
+  .result-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .chip { font-size: 13px; padding: 3px 10px; border-radius: 999px; background: var(--accent-soft); }
+  .chip b { color: var(--accent); }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; background: var(--drop); }
+  tr:last-child td { border-bottom: none; }
+  td.bad { color: var(--err); }
+  td.num { text-align: right; color: var(--muted); }
+
+  footer { color: var(--muted); font-size: 13px; padding: 0 0 32px; }
+  footer a { color: var(--accent); }
+  footer p { margin: 4px 0; }
+
+  @media (max-width: 560px) {
+    .brand small { display: none; }
+    .card { padding: 14px; }
+    .run .btn.primary { width: 100%; justify-content: center; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="brand">
+      <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#2f75b5"/><path d="M8 22V10m8 12V14m8 8V7" stroke="#fff" stroke-width="3" stroke-linecap="round"/></svg>
+      <span>Network Log Analysis Tool <small>by TING</small></span>
+    </div>
+    <span class="pill" id="version">載入中…</span>
+    <span class="spacer"></span>
+    <button class="icon-btn" id="theme" type="button" title="切換淺色 / 深色" aria-label="切換淺色 / 深色">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    </button>
+  </div>
+</header>
+
+<main class="wrap">
+  <div class="notice">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+    <div>Log 只在你的瀏覽器內解析，<b>不會上傳</b>到任何伺服器；解析引擎與桌面版 / exe 是同一份程式。第一次開啟需下載約 14 MB 執行環境，之後會使用瀏覽器快取。</div>
+  </div>
+
+  <section class="card">
+    <h2><span class="step">1</span>選擇 Log</h2>
+    <div class="drop" id="drop">
+      <p>把 Log <b>資料夾</b>或<b>檔案</b>拖曳到這裡</p>
+      <div class="btn-row">
+        <button class="btn" type="button" id="pick-folder">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+          選擇資料夾
+        </button>
+        <button class="btn" type="button" id="pick-files">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>
+          選擇檔案
+        </button>
+      </div>
+      <p class="hint">支援 .log / .txt / .conf（含子資料夾）｜設備類型依 Log 內容自動判斷，不依檔名</p>
+      <input type="file" id="folder-input" webkitdirectory multiple hidden>
+      <input type="file" id="files-input" accept=".log,.txt,.conf" multiple hidden>
+    </div>
+    <div class="selection" id="selection">
+      <div class="selection-head">
+        <strong id="selection-count"></strong>
+        <button class="btn link" type="button" id="clear">清除</button>
+      </div>
+      <details>
+        <summary>檔案清單</summary>
+        <ul class="files" id="file-list"></ul>
+      </details>
+      <div class="skipped" id="skipped"></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2><span class="step">2</span>分析並產生報表</h2>
+    <div class="run">
+      <button class="btn primary" type="button" id="run" disabled>開始分析</button>
+      <div class="progress">
+        <div class="bar"><i id="bar"></i></div>
+        <div class="status" id="status" aria-live="polite">正在準備執行環境…</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card result" id="result">
+    <div class="result-head">
+      <h2 style="margin:0"><span class="step">3</span>報表完成</h2>
+      <span class="spacer"></span>
+      <a class="btn primary" id="download" href="#" download>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M5 21h14"/></svg>
+        下載 Excel 報表
+      </a>
+    </div>
+    <div class="chips" id="chips"></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>檔案</th><th>類型</th><th>結果</th><th>秒</th></tr></thead>
+        <tbody id="file-results"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <pre class="log" id="log" aria-label="執行紀錄"></pre>
+</main>
+
+<footer class="wrap">
+  <p>支援：Cisco IOS / IOS-XE（含 Stack）、C9800 / EWC（含 HA SSO）、AireOS、NX-OS、Catalyst 1300、HPE Aruba AOS-CX（含 VSF）、FortiGate（含 HA）。</p>
+  <p>原始碼與 exe 下載：<a href="https://github.com/tingchen0329/Log_Analysis_Tool" rel="noopener">GitHub</a>｜<a href="https://github.com/tingchen0329/Log_Analysis_Tool/releases" rel="noopener">Releases</a></p>
+</footer>
+
+<script>
+"use strict";
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const LOG_EXTS = [".log", ".txt", ".conf"];
+  const LOG_MAX_LINES = 2000;
+
+  // ── 主題：預設跟隨系統，手動切換後記住（瀏覽器儲存不可用時僅本次有效）─────────
+  const root = document.documentElement;
+  try {
+    const saved = localStorage.getItem("theme");
+    if (saved === "light" || saved === "dark") root.dataset.theme = saved;
+  } catch (_) { /* 無痕模式等情況 */ }
+  $("theme").addEventListener("click", () => {
+    const dark = root.dataset.theme ? root.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+    root.dataset.theme = dark ? "light" : "dark";
+    try { localStorage.setItem("theme", root.dataset.theme); } catch (_) { /* 略過 */ }
+  });
+
+  // ── 狀態 ───────────────────────────────────────────────────────────────────
+  const selected = new Map();          // 檔名 → File
+  let skipped = 0;
+  let ready = false;
+  let running = false;
+  let downloadUrl = null;
+
+  function setStatus(text) { $("status").textContent = text; }
+  function setProgress(done, total) { $("bar").style.width = total ? `${Math.round(done / total * 100)}%` : "0"; }
+  function logLine(text, cls) {
+    const box = $("log");
+    const line = document.createElement("div");
+    line.textContent = text;
+    if (cls) line.className = cls;
+    else if (/\[ERR\]/.test(text)) line.className = "err";
+    else if (/\[WARN\]/.test(text)) line.className = "warn";
+    box.appendChild(line);
+    while (box.childElementCount > LOG_MAX_LINES) box.firstElementChild.remove();
+    box.scrollTop = box.scrollHeight;
+  }
+  function formatSize(bytes) {
+    if (bytes >= 1048576) return `${(bytes / 1048576).toFixed(1)} MB`;
+    return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  }
+  function updateRunButton() { $("run").disabled = !ready || running || selected.size === 0; }
+
+  // ── 選檔：過濾副檔名、略過 Office 暫存檔（~$）、同名檔自動加編號 ───────────
+  function accept(file) {
+    const lower = file.name.toLowerCase();
+    return LOG_EXTS.some((ext) => lower.endsWith(ext)) && !file.name.startsWith("~$");
+  }
+  function uniqueName(name) {
+    if (!selected.has(name)) return name;
+    const dot = name.lastIndexOf(".");
+    const base = dot > 0 ? name.slice(0, dot) : name;
+    const ext = dot > 0 ? name.slice(dot) : "";
+    for (let i = 2; ; i++) {
+      const candidate = `${base} (${i})${ext}`;
+      if (!selected.has(candidate)) return candidate;
+    }
+  }
+  function addFiles(files) {
+    for (const file of files) {
+      if (accept(file)) selected.set(uniqueName(file.name), file);
+      else skipped++;
+    }
+    renderSelection();
+  }
+  function renderSelection() {
+    const total = [...selected.values()].reduce((sum, f) => sum + f.size, 0);
+    $("selection").classList.toggle("show", selected.size > 0 || skipped > 0);
+    $("selection-count").textContent = `已選 ${selected.size} 個 Log（${formatSize(total)}）`;
+    const list = $("file-list");
+    list.replaceChildren(...[...selected.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([name, f]) => {
+      const li = document.createElement("li");
+      const n = document.createElement("span"); n.textContent = name;
+      const s = document.createElement("span"); s.textContent = formatSize(f.size);
+      li.append(n, s);
+      return li;
+    }));
+    $("skipped").textContent = skipped ? `已略過 ${skipped} 個非 Log 檔案（只收 .log / .txt / .conf）` : "";
+    updateRunButton();
+  }
+  $("clear").addEventListener("click", () => { selected.clear(); skipped = 0; renderSelection(); });
+
+  $("pick-folder").addEventListener("click", () => $("folder-input").click());
+  $("pick-files").addEventListener("click", () => $("files-input").click());
+  for (const id of ["folder-input", "files-input"]) {
+    $(id).addEventListener("change", (e) => { addFiles(e.target.files); e.target.value = ""; });
+  }
+
+  // 拖放：資料夾以 webkitGetAsEntry 遞迴讀取（readEntries 每次最多回傳約 100 筆，需讀到空為止）
+  function readEntries(reader) {
+    return new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+  }
+  async function walk(entry, out) {
+    if (entry.isFile) {
+      out.push(await new Promise((resolve, reject) => entry.file(resolve, reject)));
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      for (let batch = await readEntries(reader); batch.length; batch = await readEntries(reader)) {
+        for (const child of batch) await walk(child, out);
+      }
+    }
+  }
+  const drop = $("drop");
+  for (const type of ["dragenter", "dragover"]) {
+    drop.addEventListener(type, (e) => { e.preventDefault(); drop.classList.add("over"); });
+  }
+  for (const type of ["dragleave", "drop"]) {
+    drop.addEventListener(type, () => drop.classList.remove("over"));
+  }
+  drop.addEventListener("drop", async (e) => {
+    e.preventDefault();
+    const items = [...(e.dataTransfer.items || [])];
+    const entries = items.map((it) => it.webkitGetAsEntry && it.webkitGetAsEntry()).filter(Boolean);
+    if (!entries.length) { addFiles(e.dataTransfer.files); return; }
+    const files = [];
+    try {
+      for (const entry of entries) await walk(entry, files);
+    } catch (err) {
+      logLine(`讀取拖放的檔案失敗：${err && err.message ? err.message : err}`, "err");
+    }
+    addFiles(files);
+  });
+  // 拖放到頁面其他位置時，避免瀏覽器直接開啟檔案
+  window.addEventListener("dragover", (e) => e.preventDefault());
+  window.addEventListener("drop", (e) => e.preventDefault());
+
+  // ── Worker：在瀏覽器內執行 Python（Pyodide）──────────────────────────────
+  const pill = $("version");
+  let worker;
+  try {
+    worker = new Worker("./worker.js", { type: "module" });
+  } catch (err) {
+    fatal("此瀏覽器無法啟動 Web Worker。請改用最新版 Chrome / Edge，或下載 exe 版。");
+    return;
+  }
+  function fatal(text) {
+    pill.textContent = "無法載入";
+    pill.className = "pill bad";
+    setStatus(text);
+    logLine(text, "err");
+  }
+  worker.addEventListener("error", (e) => {
+    e.preventDefault();
+    if (!ready) fatal("執行環境載入失敗：瀏覽器可能不支援 Module Worker（請改用最新版 Chrome / Edge），或網路擋住了本站的 .wasm 檔。也可以下載 exe 版離線使用。");
+  });
+  worker.addEventListener("message", (e) => {
+    const m = e.data;
+    switch (m.type) {
+      case "status":
+        setStatus(m.text);
+        break;
+      case "ready":
+        ready = true;
+        pill.textContent = `就緒（${m.version}）`;
+        pill.className = "pill ready";
+        setStatus("請先選擇 Log，再按「開始分析」");
+        logLine(`就緒（${m.version}）`);
+        updateRunButton();
+        break;
+      case "log":
+        logLine(m.text);
+        break;
+      case "progress":
+        setProgress(m.done, m.total);
+        setStatus(`分析中… ${m.done} / ${m.total}`);
+        break;
+      case "done":
+        running = false;
+        showResult(m);
+        updateRunButton();
+        break;
+      case "error":
+        running = false;
+        setStatus(`分析失敗：${m.text}`);
+        logLine(`分析失敗：${m.text}`, "err");
+        updateRunButton();
+        break;
+      case "fatal":
+        fatal(`執行環境載入失敗：${m.text}`);
+        break;
+    }
+  });
+
+  function reportName() {
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, "0");
+    return `Network_Analysis_${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}.xlsx`;
+  }
+
+  function showResult(m) {
+    if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+    downloadUrl = URL.createObjectURL(new Blob([m.xlsx], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }));
+    const name = reportName();
+    const link = $("download");
+    link.href = downloadUrl;
+    link.download = name;
+
+    $("chips").replaceChildren(...m.sheets.map(([sheet, rows]) => {
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      chip.append(`${sheet} `);
+      const b = document.createElement("b"); b.textContent = rows;
+      chip.append(b, " 列");
+      return chip;
+    }));
+
+    $("file-results").replaceChildren(...m.files.map((f) => {
+      const tr = document.createElement("tr");
+      const failed = Boolean(f.error) || f.type === "Unknown";
+      const cells = [f.source, f.type, f.error || f.summary || "無法判斷設備類型", f.seconds.toFixed(2)];
+      cells.forEach((text, i) => {
+        const td = document.createElement("td");
+        td.textContent = text;
+        if (i === 2 && failed) td.className = "bad";
+        if (i === 3) td.className = "num";
+        tr.appendChild(td);
+      });
+      return tr;
+    }));
+
+    const failed = m.files.filter((f) => f.error || f.type === "Unknown").length;
+    setProgress(1, 1);
+    setStatus(`完成：${m.devices} 台設備、${m.aps} 台 AP${failed ? `，${failed} 個檔案無法解析` : ""}`);
+    logLine(`報表完成：${name}`);
+    $("result").classList.add("show");
+    $("result").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  $("run").addEventListener("click", async () => {
+    if (!ready || running || !selected.size) return;
+    running = true;
+    updateRunButton();
+    $("result").classList.remove("show");
+    setProgress(0, 1);
+    setStatus("讀取檔案…");
+    logLine(`開始分析 ${selected.size} 個檔案`);
+    try {
+      const files = [];
+      for (const [name, file] of selected) files.push({ name, data: await file.arrayBuffer() });
+      worker.postMessage({ type: "analyze", files }, files.map((f) => f.data));
+    } catch (err) {
+      running = false;
+      updateRunButton();
+      setStatus(`讀取檔案失敗：${err && err.message ? err.message : err}`);
+    }
+  });
+})();
+</script>
+</body>
+</html>

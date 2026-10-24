@@ -1,5 +1,20 @@
 # 版本紀錄
 
+> 註：V19 起重新整理版號。2026/05 舊版 README 內的「V20～V24」是舊編號，與下列版本內容不同。
+
+## V22
+
+依 Cisco / HPE Aruba 官方文件的指令輸出與狀態值比對，修正環境狀態漏判：
+
+- 環境異常關鍵字改為字首比對：Failure / Failed / Faulty 也算異常（V21 只認完整單字 FAIL / FAULT）
+- NX-OS：電源 `Shutdown` 判為異常、`Fan_in_PSn` 歸類為電源；修正 N3K 風扇列 `Fan-1 …` 被誤認為區段標頭而略過
+- AireOS：電源改看 show sysinfo 的 `Power Supply N ... Present, OK`（V21 只看溫度）；sysinfo 沒有 CPU 欄位時改取 `show cpu`
+- Aruba：PSU `Warning` 判為異常、`Absent`（插槽未安裝）不再判為異常；風扇同時檢查 Fan tray
+- 新增 IOS Stack、NX-OS、AireOS、C1300 合成測試資料與單元測試（7 → 29 個測試）
+- 新增網頁版（GitHub Pages + Pyodide，瀏覽器內解析、Log 不上傳），push 到 main 自動部署
+- 新增 `tests/compare_versions.py`：新舊版本以真實 Log 逐欄比對
+- README 整理為三種使用方式：exe、Python 原始碼、網頁版
+
 ## V21
 
 - 移除 pandas 依賴，Excel 改由 openpyxl 直接寫入（輸出逐格與 V20 相同），exe 由約 60 MB 降到約 7~10 MB、啟動更快

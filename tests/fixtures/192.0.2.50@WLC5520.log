@@ -1,0 +1,99 @@
+(WLC5520) >config paging disable
+
+(WLC5520) >show sysinfo
+
+Manufacturer's Name.............................. Cisco Systems Inc.
+Product Name..................................... Cisco Controller
+Product Version.................................. 8.10.190.0
+RTOS Version..................................... 8.10.190.0
+Bootloader Version............................... 8.5.103.0
+Emergency Image Version.......................... 8.5.103.0
+OUI File Last Update Time........................ Tue Jan 01 00:00:00 CST 2025
+Build Type....................................... DATA + WPS
+System Name...................................... WLC5520
+System Location..................................
+System Contact...................................
+System ObjectID.................................. 1.3.6.1.4.1.9.1.2170
+Redundancy Mode.................................. Disabled
+IP Address....................................... 192.0.2.50
+IPv6 Address..................................... ::
+System Up Time................................... 63 days 5 hrs 53 mins 12 secs
+System Timezone Location......................... (GMT +8:00) Taipei
+System Stats Realtime Interval................... 5
+System Stats Normal Interval..................... 180
+Configured Country............................... TW  - Taiwan
+Operating Environment............................ Commercial (10 to 35 C)
+Internal Temp Alarm Limits....................... 10 to 38 C
+Internal Temperature............................. +24 C
+Fan Status....................................... OK
+RAID Volume Status
+Drive 0.......................................... Good
+Drive 1.......................................... Good
+State of 802.11b Network......................... Enabled
+State of 802.11a Network......................... Enabled
+Number of WLANs.................................. 4
+Number of Active Clients......................... 321
+OUI Classification Failure Count................. 0
+Burned-in MAC Address............................ AA:BB:CC:00:50:00
+Power Supply 1................................... Present, OK
+Power Supply 2................................... Present, Not OK
+Maximum number of APs supported.................. 1500
+System Nas-Id....................................
+WLC MIC Certificate Types........................ SHA1/SHA2
+Licensing Type................................... RTU
+
+(WLC5520) >show cpu
+
+Current CPU(s) load: 3%
+
+Individual CPU load: 2%/1%, 3%/0%, 1%/0%, 4%/1%
+
+(WLC5520) >show memory statistics
+
+System Memory Statistics:
+Total System Memory............: 4022194176 bytes
+Used System Memory.............: 2361995264 bytes
+Free System Memory.............: 1660198912 bytes
+Bytes allocated from RTOS......: 1086382408 bytes
+Chunks Free....................: 13 bytes
+
+(WLC5520) >show inventory
+
+Burned-in MAC Address............................ AA:BB:CC:00:50:00
+Maximum number of APs supported.................. 1500
+NAME: "Chassis"    , DESCR: "Cisco 5520 Wireless Controller"
+PID: AIR-CT5520-K9, VID: V01, SN: FCH0000TST5
+
+(WLC5520) >show ap join stats summary all
+
+Number of APs.............................................. 3
+
+Base Mac             AP EthernetMac         AP Name         IP Address         Status
+aa:bb:cc:00:a1:00     aa:bb:cc:00:a1:01     AP-LOBBY-01     192.0.2.101       Joined
+aa:bb:cc:00:a2:00     aa:bb:cc:00:a2:01     AP-OFFICE-02    192.0.2.102       Joined
+aa:bb:cc:00:a3:00     aa:bb:cc:00:a3:01     AP-OLD-03       192.0.2.103       Not joined
+
+(WLC5520) >show ap inventory all
+
+Inventory for AP-LOBBY-01
+
+NAME: "AP2800"    , DESCR: "Cisco Aironet 2800 Series (IEEE 802.11ac) Access Point"
+PID: AIR-AP2802I-H-K9  ,  VID: 02,  SN: FGL0000AP01
+
+Inventory for AP-OFFICE-02
+
+NAME: "AP3800"    , DESCR: "Cisco Aironet 3800 Series (IEEE 802.11ac) Access Point"
+PID: AIR-AP3802I-H-K9  ,  VID: 02,  SN: FGL0000AP02
+
+(WLC5520) >show logging
+
+Logging to buffer :
+- Logging of system messages to buffer :
+ - Logging filter level.......................... errors
+ - Number of system messages logged.............. 1234
+ - Number of system messages dropped............. 0
+*apfMsConnTask_0: Oct 22 10:15:01.100: %APF-3-AUTHENTICATE_FAIL: apf_foreignap.c:1194 Authentication failed for client aa:bb:cc:dd:ee:01
+*spamApTask4: Oct 22 09:00:00.000: %LWAPP-3-DISC_OTAP_ERR: spam_lrad.c:5554 Ignoring OTAP discovery request from AP aa:bb:cc:00:a3:01, OTAP is disabled
+*apfMsConnTask_0: Oct 21 08:00:00.000: %APF-3-AUTHENTICATE_FAIL: apf_foreignap.c:1194 Authentication failed for client aa:bb:cc:dd:ee:01
+
+(WLC5520) >logout

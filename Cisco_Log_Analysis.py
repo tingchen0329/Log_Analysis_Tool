@@ -19,6 +19,16 @@
 #   GUI：python Cisco_Log_Analysis.py             （或 pythonw 無黑視窗）
 #   CLI：python Cisco_Log_Analysis.py <Log資料夾> [-o 報表.xlsx]
 #
+# V22 變更摘要（依 Cisco / HPE Aruba 官方文件比對修正）：
+#   1. 環境異常關鍵字改為字首比對：Failure / Failed / Faulty 也算異常
+#      （V21 的 \bFAIL\b 只認完整單字，NX-OS 官方範例的「failure or missing」會被判為正常）
+#   2. NX-OS：電源 Shutdown（拔線或斷電）判為異常；「Fan_in_PSn」列歸類為電源；
+#      N3K 的風扇列「Fan-1 …」會被誤認成區段標頭而略過，改為只認「Fan:」與欄位標題列
+#   3. AireOS：電源改看 show sysinfo 的「Power Supply N ... Present, OK」（V21 只看溫度）；
+#      show sysinfo 沒有 CPU 欄位時，備援取 show cpu 的「Current CPU load」
+#   4. Aruba：PSU「Warning」判為異常；「Absent」（插槽未安裝電源）不再判為異常；
+#      風扇同時檢查 Fan tray（ready / fault / empty）
+#
 # V21 變更摘要：
 #   1. 移除 pandas 依賴：Excel 改由 openpyxl 直接寫入，輸出內容與格式不變，exe 體積大幅縮小
 #   2. 程式註解中的範例資料全部改為假資料（序號 / MAC / IP / 主機名稱）
@@ -88,7 +98,7 @@ except ImportError:                                   # pragma: no cover
 # 1. 全域常數
 # ==============================================================================
 
-APP_VERSION = "V21"
+APP_VERSION = "V22"
 MARK = "○"                       # Stack / HA 非首列「與首列共用」標記
 
 # ── Syslog：擷取等級 0~4（保留時間戳記），並排除雜訊 ─────────────────────────
@@ -122,12 +132,17 @@ C1300_EXCLUDE_PREFIXES = (
 )
 
 # ── 環境異常關鍵字 ────────────────────────────────────────────────────────────
+# FAIL / FAULT 採字首比對：Failure、Failed、Faulty 也算（Cisco 各平台用字不一）
 ENV_BAD_REGEX = re.compile(
-    r"\b(FAIL|FAULT|ALARM|CRITICAL|BAD|OFF|NOT\s+OK|DOWN|ERROR|ABSENT)\b", re.I
+    r"\b(FAIL\w*|FAULT\w*|ALARM|CRITICAL|BAD|OFF|NOT\s+OK|DOWN|ERROR|ABSENT)\b", re.I
 )
 # C1300 不含 OFF：PoE 埠未接設備時「Oper: Off」屬正常
 ENV_BAD_REGEX_C1300 = re.compile(
-    r"\b(FAIL|FAULT|ALARM|CRITICAL|BAD|NOT\s+OK|ERROR|ABSENT)\b", re.I
+    r"\b(FAIL\w*|FAULT\w*|ALARM|CRITICAL|BAD|NOT\s+OK|ERROR|ABSENT)\b", re.I
+)
+# NX-OS 另含 Shutdown：電源拔線 / 斷電時 Status 顯示 Shutdown（N9K），風扇 / 電源缺件為 failure or missing
+ENV_BAD_REGEX_NXOS = re.compile(
+    r"\b(FAIL\w*|FAULT\w*|ALARM|CRITICAL|BAD|OFF|NOT\s+OK|DOWN|ERROR|ABSENT|SHUTDOWN)\b", re.I
 )
 FAN_WORD_RE = re.compile(r"\bFANS?\b|Fan", re.I)
 PWR_WORD_RE = re.compile(r"\bPS-?\d|\bPWR|POWER|PSU|SUPPLY", re.I)
@@ -803,16 +818,21 @@ class NexusParser(BaseParser):
                           if m else Unit(1, "N9K-Chassis", "Unknown"))
 
     def _parse_env(self):
-        """show environment 分成 Fan / Power Supply 區段，各自判斷 Status 欄（溫度區段不列入）。"""
+        """
+        show environment 分成 Fan / Power Supply 區段，各自判斷 Status 欄（溫度區段不列入）。
+        官方範例狀態：ok、failure or missing、fail/shutdown、Shutdown（N9K 電源未供電）。
+        """
         section, fan_bad, pwr_bad = "", False, False
         for line in self.cmd("show environment").splitlines():
-            head = re.match(r"^(Fan|Power Supply|Temperature|Power Usage Summary)\b", line)
+            # 區段標頭為「Fan:」或欄位標題「Fan    Model …」；資料列「Fan-1 …」「Fan1(sys_fan1)」不是標頭
+            head = re.match(r"^(Fan|Power Supply|Temperature|Power Usage Summary)(?=\s*:|\s{2,}|\s*$)", line)
             if head:
                 section = head.group(1)
                 continue
-            if ENV_BAD_REGEX.search(line):
-                fan_bad |= section == "Fan"
-                pwr_bad |= section == "Power Supply"
+            if ENV_BAD_REGEX_NXOS.search(line):
+                psu_fan = section == "Fan" and re.match(r"\s*Fan_in_PS", line, re.I)
+                fan_bad |= section == "Fan" and not psu_fan      # 電源內建風扇隨電源 Shutdown，歸類為電源
+                pwr_bad |= section == "Power Supply" or bool(psu_fan)
         self.fan_status = "異常" if fan_bad else "正常"
         self.pwr_status = "異常" if pwr_bad else "正常"
 
@@ -1055,7 +1075,9 @@ class AireOSParser(BaseParser):
         self.info.ha_role = "Standalone" if not mode or mode.lower() == "disabled" else f"HA ({mode})"
 
     def _parse_cpu(self):
-        val = self._sys("CPU Average Usage", r"(\d+)")
+        """show sysinfo 的 CPU Average Usage；部分機型 / 版本沒有此欄，改取 show cpu 的 Current CPU load。"""
+        val = self._sys("CPU Average Usage", r"(\d+)") or rsearch(
+            r"Current CPU(?:\(s\))? load\s*:\s*([\d.]+)\s*%", self.cmd("show cpu"))
         self.info.cpu = f"{val}%" if val else "N/A"
 
     def _parse_memory(self):
@@ -1077,11 +1099,17 @@ class AireOSParser(BaseParser):
         # firmware 也是 Unknown：代表只是 AP 指令片段檔，不列出任何設備
 
     def _parse_env(self):
-        """Fan Status == OK 為正常；Internal / Mgig / External 任一溫度超過 Alarm 上限 → 電源異常。"""
+        """
+        Fan Status == OK 為正常。
+        電源：show sysinfo 的「Power Supply N ... Present, OK」（5520 / 8540 等雙電源機型），
+              Present 但不是 OK 即異常；Absent（未安裝）不算異常。
+              另沿用 V21：Internal / Mgig / External 任一溫度超過 Alarm 上限 → 電源異常。
+        """
         fan = self._sys("Fan Status", r"(\w+)")
         if fan:
             self.fan_status = "正常" if fan.upper() == "OK" else "異常"
-        pwr_bad = False
+        pwr_bad = any(not re.match(r"OK\b", state.strip(), re.I) for state in
+                      re.findall(r"^Power Supply \d+[.\s]+Present\s*,\s*([^\n]*)$", self.sysinfo_sec, re.M | re.I))
         for limit_key, temp_key in (("Internal Temp Alarm Limits", "Internal Temperature"),
                                     ("Mgig Temp Alarm Limits", "Mgig Temperature"),
                                     ("External Temp Alarm Limits", "External Temperature")):
@@ -1222,12 +1250,19 @@ class ArubaParser(BaseParser):
             ))
 
     def _parse_env(self):
-        bad = re.compile(r"\b(FAIL|FAULT|ALARM|ERROR|ABSENT|CRITICAL)\b", re.I)
-        fan = rsearch(r"Fan information(.*?)(?=\n\nshow environment|\Z)", self.env_sec, flags=re.S | re.I, default="")
+        """
+        依 AOS-CX 官方說明：
+          風扇 / 風扇盤：ok、ready 正常；fault 異常；empty（未安裝）、uninitialized 不算異常
+          電源：OK、OK* 正常；Input Fault / Output Fault / Warning 異常；Absent（插槽未安裝）不算異常
+        """
+        bad = re.compile(r"\b(FAIL\w*|FAULT\w*|ALARM|ERROR|CRITICAL)\b", re.I)
+        psu_bad = re.compile(r"\b(FAIL\w*|FAULT\w*|ALARM|ERROR|CRITICAL|WARNING)\b", re.I)
+        fan = rsearch(r"Fan (?:tray )?information(.*?)(?=\n\nshow environment|\Z)", self.env_sec,
+                      flags=re.S | re.I, default="")
         psu = rsearch(r"show environment power-supply\s*\n.*?\n.*?\n.*?\n(.*?)(?=\n\n|\Z)",
                       self.env_sec, flags=re.S | re.I, default="")
         self.fan_status = "異常" if bad.search(fan) else "正常"
-        self.pwr_status = "異常" if bad.search(psu) else "正常"
+        self.pwr_status = "異常" if psu_bad.search(psu) else "正常"
 
         # 溫度表：「1/1-CPU   management-module   45.75 C   normal」→ 取最高溫，非 normal 另外標示
         temps = re.findall(r"^(\S+)\s+\S+-module\s+([\d.]+)\s*C\s+(\S+)", self.env_sec, re.M)

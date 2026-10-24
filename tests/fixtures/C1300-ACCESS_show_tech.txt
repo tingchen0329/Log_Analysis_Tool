@@ -1,0 +1,95 @@
+C1300-ACCESS#show tech-support
+
+------------------ show clock detail ------------------
+
+10:30:00 TW Wed Oct 22 2026
+
+------------------ show system ------------------
+
+System Description:                       C1300-24P-4X 24-Port Gigabit with 4-Port 10-Gigabit PoE Managed Switch
+System Up Time (days,hour:min:sec):       12,03:04:05
+System Contact:
+System Name:                              C1300-ACCESS
+System Location:
+System MAC Address:                       aa:bb:cc:00:13:00
+System Object ID:                         1.3.6.1.4.1.9.6.1.1300.24.1
+
+Unit    Type
+----    ----------------------------
+1       C1300-24P-4X
+2       C1300-24P-4X
+
+Unit    Fans Status
+----    ---------------
+1       OK
+2       Failure
+
+Unit    Temperature (Celsius)    Status
+----    ---------------------    ------
+1       45                       OK
+2       47                       OK
+
+------------------ show version ------------------
+
+Active-image: flash://system/images/image_c1300_4.1.6.53.bin
+  Version: 4.1.6.53
+  MD5 Digest: 00000000000000000000000000000000
+  Date: 15-Apr-2025
+  Time: 10:00:00
+Inactive-image: flash://system/images/image_c1300_4.1.3.36.bin
+  Version: 4.1.3.36
+  MD5 Digest: 11111111111111111111111111111111
+  Date: 01-Oct-2024
+  Time: 10:00:00
+
+------------------ show inventory ------------------
+
+NAME: "1", DESCR: "24-Port Gigabit with 4-Port 10-Gigabit PoE Managed Switch"
+PID: C1300-24P-4X , VID: V01, SN: PSZ0000TS01
+NAME: "2", DESCR: "24-Port Gigabit with 4-Port 10-Gigabit PoE Managed Switch"
+PID: C1300-24P-4X , VID: V01, SN: PSZ0000TS02
+
+------------------ show stack ------------------
+
+Unit Id    MAC Address          Role       Uptime
+-------    -----------------    -------    ------------
+   1       aa:bb:cc:00:13:00    Active     12,03:04:05
+   2       aa:bb:cc:00:13:80    Member     12,03:02:10
+
+------------------ show cpu utilization ------------------
+
+CPU utilization service is on.
+CPU utilization
+--------------------------------------------------
+five seconds: 5%; one minute: 4%; five minutes: 3%
+
+------------------ memory info ------------------
+
+Dynamic (OS managed) RAM usage:
+    Requested = 1048576000, Free = 702545920, Used = 346030080, Usage = 33%
+
+------------------ show ip interface ------------------
+
+    IP Address         I/F      I/F Status  Type     Directed  Prec Redirect Status
+                                admin/oper           Broadcast
+------------------- --------- ----------- ------- --------- ---- -------- ------
+192.0.2.30/24       vlan 1    UP/UP       Static  disable   No   enable   Valid
+
+------------------ show logging ------------------
+
+Logging is enabled.
+Console Logging: Level info. Console Messages: 0 Dropped.
+Buffer Logging: Level info. Buffer Messages: 6 Logged, 6 Displayed, 1000 Max.
+
+22-Oct-2026 10:00:00 :%STP-W-PORTSTATUS: gi1/0/5: STP status Forwarding
+22-Oct-2026 09:30:00 :%AAA-W-REJECT: New ssh connection for user admin, source 192.0.2.99 destination 192.0.2.30 REJECTED
+21-Oct-2026 12:00:00 :%LINK-I-Up:  gi1/0/5
+21-Oct-2026 08:00:00 :%AAA-W-REJECT: New ssh connection for user admin, source 192.0.2.99 destination 192.0.2.30 REJECTED
+20-Oct-2026 07:00:00 :%POE-E-OVERLOAD: Port gi2/0/7 power overload detected
+
+------------------ show running-config ------------------
+
+hostname C1300-ACCESS
+interface vlan 1
+ ip address 192.0.2.30 255.255.255.0
+exit

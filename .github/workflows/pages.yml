@@ -1,0 +1,51 @@
+# push 到 main：組出網頁版 → 煙霧測試（Node 模擬瀏覽器 Worker 跑 tests/fixtures）→ 部署到 GitHub Pages
+# 第一次使用：repo「Settings → Pages → Build and deployment → Source」選 GitHub Actions
+name: Deploy Web (GitHub Pages)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Cisco_Log_Analysis.py"
+      - "web/**"
+      - "tests/fixtures/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: 組出網站（Pyodide + wheel 自行託管）
+        run: python web/build_site.py _site
+      - name: 網頁版煙霧測試
+        run: node --no-warnings web/smoke_test.cjs _site tests/fixtures
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

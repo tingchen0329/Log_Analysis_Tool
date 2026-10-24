@@ -1,0 +1,125 @@
+N9K-LEAF# terminal length 0
+N9K-LEAF# show version
+Cisco Nexus Operating System (NX-OS) Software
+TAC support: http://www.cisco.com/tac
+Copyright (C) 2002-2024, Cisco and/or its affiliates.
+All rights reserved.
+
+Software
+  BIOS: version 05.47
+  NXOS: version 10.3(6) [Maintenance Release]
+  BIOS compile time:  04/06/2022
+  NXOS image file is: bootflash:///nxos64-cs.10.3.6.M.bin
+  NXOS compile time:  6/30/2024 12:00:00 [07/01/2024 01:00:00]
+
+Hardware
+  cisco Nexus9000 C93180YC-FX Chassis
+  Intel(R) Xeon(R) CPU  D-1528 @ 1.90GHz with 24569968 kB of memory.
+  Processor Board ID FDO00000TST
+
+  Device name: N9K-LEAF
+  bootflash:  115805708 kB
+
+Kernel uptime is 120 day(s), 3 hour(s), 4 minute(s), 5 second(s)
+
+N9K-LEAF# show inventory
+NAME: "Chassis",  DESCR: "Nexus9000 C93180YC-FX Chassis"
+PID: N9K-C93180YC-FX     ,  VID: V04  ,  SN: FDO00000TST
+
+NAME: "Slot 1",  DESCR: "48x10/25G + 6x40/100G Ethernet Module"
+PID: N9K-C93180YC-FX     ,  VID: V04  ,  SN: FDO00000TST
+
+NAME: "Power Supply 1",  DESCR: "Nexus9000 C93180YC-FX Chassis Power Supply"
+PID: NXA-PAC-650W-PE     ,  VID: V01  ,  SN: DCB0000NX01
+
+NAME: "Power Supply 2",  DESCR: "Nexus9000 C93180YC-FX Chassis Power Supply"
+PID: NXA-PAC-650W-PE     ,  VID: V01  ,  SN: DCB0000NX02
+
+N9K-LEAF# show system resources
+Load average:   1 minute: 0.43   5 minutes: 0.38   15 minutes: 0.39
+Processes   :   1052 total, 1 running
+CPU states  :   5.5% user,   12.0% kernel,   82.5% idle
+Memory usage:   4117064K total,   2614356K used,   1502708K free
+Kernel vmalloc:   0K total,   0K free
+Kernel buffers:   201912K Used
+Kernel cached :   1452172K Used
+
+N9K-LEAF# show environment
+Fan:
+---------------------------------------------------------------------------
+Fan             Model                Hw     Direction       Status
+---------------------------------------------------------------------------
+Fan1(sys_fan1)  NXA-FAN-30CFM-B      --     front-to-back   Ok
+Fan2(sys_fan2)  NXA-FAN-30CFM-B      --     front-to-back   Ok
+Fan3(sys_fan3)  NXA-FAN-30CFM-B      --     front-to-back   Ok
+Fan4(sys_fan4)  NXA-FAN-30CFM-B      --     front-to-back   Ok
+Fan_in_PS1      --                   --     front-to-back   Ok
+Fan_in_PS2      --                   --     front-to-back   Shutdown
+Fan Zone Speed: Zone 1: 0x80
+Fan Air Filter : NotSupported
+
+
+Power Supply:
+Voltage: 12 Volts
+Power                              Actual        Actual        Total
+Supply    Model                    Output        Input        Capacity    Status
+                                   (Watts )      (Watts )     (Watts )
+-------  -------------------  -----------  -----------  -----------  --------------
+1        NXA-PAC-650W-PE          129 W        140 W        650 W     Ok
+2        NXA-PAC-650W-PE            0 W          0 W        650 W     Shutdown
+
+
+Power Usage Summary:
+--------------------
+Power Supply redundancy mode (configured)                PS-Redundant
+Power Supply redundancy mode (operational)               Non-Redundant
+
+Total Power Capacity (based on configured mode)            650.00 W
+Total Power of all Inputs (cumulative)                     650.00 W
+Total Power Output (actual draw)                           129.00 W
+Total Power Input (actual draw)                            140.00 W
+
+Temperature:
+--------------------------------------------------------------------
+Module   Sensor        MajorThresh   MinorThres   CurTemp     Status
+                       (Celsius)     (Celsius)    (Celsius)
+--------------------------------------------------------------------
+1        FRONT           80              70          33         Ok
+1        BACK            70              42          29         Ok
+
+N9K-LEAF# show vpc role
+
+vPC Role status
+----------------------------------------------------
+vPC role                        : primary
+Dual Active Detection Status    : 0
+vPC system-mac                  : 00:23:04:ee:be:0a
+vPC system-priority             : 32667
+vPC local system-mac            : aa:bb:cc:00:20:01
+vPC local role-priority         : 100
+vPC local config role-priority  : 100
+vPC peer system-mac             : aa:bb:cc:00:20:02
+vPC peer role-priority          : 200
+vPC peer config role-priority   : 200
+
+N9K-LEAF# show running-config
+!Command: show running-config
+!Running configuration last done at: Mon Oct 20 08:00:00 2026
+
+version 10.3(6) Bios:version 05.47
+hostname N9K-LEAF
+
+interface Vlan10
+  no shutdown
+  ip address 198.51.100.2/24
+
+interface mgmt0
+  vrf member management
+  ip address 198.51.100.20/24
+
+N9K-LEAF# show logging
+2026 Oct 20 09:53:52 N9K-LEAF %ETHPORT-5-IF_DOWN_LINK_FAILURE: Interface Ethernet1/10 is down (Link failure)
+2026 Oct 20 10:00:00 N9K-LEAF %DAEMON-3-SYSTEM_MSG: error: PAM: Authentication failure for illegal user test from 192.0.2.99 - dcos_sshd[12345]
+2026 Oct 21 10:00:01 N9K-LEAF %$ VDC-1 %$ %PLATFORM-2-PS_FAIL: Power supply 2 failed or shut down (Serial number DCB0000NX02)
+2026 Oct 21 10:00:02 N9K-LEAF %$ VDC-1 %$ %PLATFORM-2-PS_RED_MODE_CHG: Power redundancy mode changed to non-redundant
+N9K-LEAF# exit

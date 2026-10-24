@@ -16,3 +16,5 @@ venv/
 build/
 dist/
 *.spec
+_site/
+node_modules/
