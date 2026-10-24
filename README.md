@@ -35,7 +35,7 @@
 
 ### 方式一：下載 exe，離線使用
 
-1. 到 [Releases](https://github.com/tingchen0329/Log_Analysis_Tool/releases) 下載最新版的 `Log_Analysis_Tool.exe`（約 7~10 MB）。
+1. 到 [最新版 Release](https://github.com/tingchen0329/Log_Analysis_Tool/releases/latest) 下載 `Log_Analysis_Tool.exe`（約 12 MB）。
 2. 把 exe 放在任何資料夾，雙擊執行（不需要安裝 Python，也不需要網路）。
 3. 選擇 Log 資料夾 → 開始分析 → 選擇 Excel 存檔位置。
 
@@ -244,10 +244,12 @@ python tests/compare_versions.py 舊版.py Cisco_Log_Analysis.py <真實Log資�
 python web/build_site.py _site                                # 組出網頁版
 node --no-warnings web/smoke_test.cjs _site tests/fixtures    # 網頁版煙霧測試
 
-git tag -a v22 -m v22 && git push origin main --follow-tags   # 發佈新版本（GitHub Actions 自動產出 exe）
+git tag -a v23 -m v23 && git push origin main --follow-tags   # 發佈新版本（GitHub Actions 自動產出 exe）
 ```
 
-- 網頁版第一次部署前，請到 Repo **Settings → Pages → Build and deployment → Source** 選 **GitHub Actions**。
+- 網頁版已啟用（Repo **Settings → Pages → Source** 為 **GitHub Actions**）；fork 本專案時需自行開啟這項設定。
+- 發佈新版本：改 `APP_VERSION` 與 CHANGELOG → push 到 main（網頁版自動更新）→ 推送新的 `vXX` tag（自動打包 exe 並建立 Release）。也可以雙擊 `push_to_github.bat` 一次完成。
+- 第一次在新電腦推送時，Git 會要求登入 GitHub：請用瀏覽器登入（`git config --global credential.helper manager`），不要輸入帳號密碼；GitHub 已不接受密碼推送。
 - 網頁版不需要另外改程式：只要 `analyze_folder` / `write_excel` / `build_sheets` 的介面不變，push 到 main 就會自動更新。
 
 > ⚠️ 本 Repo 為公開專案，`.gitignore` 已排除 `*.log` / `*.conf` / `*.txt` / `*.xlsx`，請勿提交客戶 Log 或報表。
