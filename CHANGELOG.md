@@ -2,6 +2,18 @@
 
 > 註：V19 起重新整理版號。2026/05 舊版 README 內的「V20～V24」是舊編號，與下列版本內容不同。
 
+## V23
+
+新功能：維護設備比對（上季 / 本季兩份維護報表 → 差異報表）
+
+- 以 Serial Number 配對；Stack / HA 的「○」先補成首列的值再比對
+- 判定：新增設備、移除設備、換機、Stack 成員換新 / 新增 / 移除、HA 機箱換新、AP 換機、改名
+- 欄位異動：Model、OOB IP、Firmware、HA Role、Fan / Power Status、System Log 新增告警；同群組相同異動合併成一列
+- 沒有序號或序號重複時，改用 Hostname + Model 配對並列入「需人工確認」
+- 比對報表分頁：摘要、新增設備、移除設備、換機與成員變更、欄位異動、新增 AP、移除 AP、需人工確認（無差異寫「無」）
+- GUI 新增「分析 Log / 維護設備比對」切換；網頁版新增標籤頁（網址 `#compare`）；CLI 新增 `--compare`、`--compare-with`
+- 新增合成兩季範例報表 `tests/fixtures/compare_2026Q2/Q3.xlsx` 與 18 個比對測試（29 → 47 個測試）；網頁版煙霧測試涵蓋比對
+
 ## V22
 
 依 Cisco / HPE Aruba 官方文件的指令輸出與狀態值比對，修正環境狀態漏判：

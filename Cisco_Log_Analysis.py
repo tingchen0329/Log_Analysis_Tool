@@ -2,7 +2,8 @@
 # Design By Ting Chen
 # Cisco_Log_Analysis.py
 #
-# 功能：讀取 Cisco / Aruba / FortiGate 設備 Log 檔案，解析設備資訊並彙整輸出成 Excel 報表。
+# 功能：讀取 Cisco / Aruba / FortiGate 設備 Log 檔案，解析設備資訊並彙整輸出成 Excel 報表；
+#       並可比對上季 / 本季兩份維護報表，列出新增、移除、換機與欄位異動（維護設備比對）。
 #
 # 支援設備：
 #   - Cisco C9800 WLC / EWC（IOS-XE，含 HA SSO 雙機判定）
@@ -17,7 +18,17 @@
 #
 # 使用方式：
 #   GUI：python Cisco_Log_Analysis.py             （或 pythonw 無黑視窗）
-#   CLI：python Cisco_Log_Analysis.py <Log資料夾> [-o 報表.xlsx]
+#   CLI：python Cisco_Log_Analysis.py <Log資料夾> [-o 報表.xlsx] [--compare-with 上季.xlsx]
+#   比對：python Cisco_Log_Analysis.py --compare 上季.xlsx 本季.xlsx [-o 比對.xlsx]
+#
+# V23 變更摘要（新功能：維護設備比對）：
+#   1. 比對上季 / 本季兩份維護報表（本工具產出的 .xlsx），以 Serial Number 配對，輸出差異報表：
+#      摘要、新增設備、移除設備、換機與成員變更（Stack 成員 / HA 機箱 / AP 換機）、
+#      欄位異動（改名、Model、OOB IP、Firmware、HA Role、Fan / Power、System Log 新增告警）、
+#      新增 AP、移除 AP、需人工確認（無序號或序號重複）
+#   2. Stack / HA 非首列的「○」先補成首列的值再比對；同群組多台相同異動合併成一列
+#   3. GUI 新增「分析 Log / 維護設備比對」切換；CLI 新增 --compare 與 --compare-with
+#   4. Excel 寫入共用 write_workbook()（維護報表與比對報表格式一致）
 #
 # V22 變更摘要（依 Cisco / HPE Aruba 官方文件比對修正）：
 #   1. 環境異常關鍵字改為字首比對：Failure / Failed / Faulty 也算異常
@@ -98,7 +109,7 @@ except ImportError:                                   # pragma: no cover
 # 1. 全域常數
 # ==============================================================================
 
-APP_VERSION = "V22"
+APP_VERSION = "V23"
 MARK = "○"                       # Stack / HA 非首列「與首列共用」標記
 
 # ── Syslog：擷取等級 0~4（保留時間戳記），並排除雜訊 ─────────────────────────
@@ -1800,18 +1811,19 @@ def _cell_width(value) -> int:
     return max(len(line.encode("big5", errors="ignore")) for line in str(value).split("\n"))
 
 
-def write_excel(path: str, devices: List[Dict], aps: List[Dict]):
+def write_workbook(path: str, sheets: Dict[str, Sheet]):
     """寫入 Excel 並套用格式：藍底白字表頭、微軟正黑體、細框線、自動欄寬（上限 100）。"""
     header_fill = PatternFill("solid", fgColor="2F75B5")
     header_font = Font(name="微軟正黑體", size=12, bold=True, color="FFFFFF")
     data_font = Font(name="微軟正黑體", size=12)
     header_align = Alignment(horizontal="center")
+    wrap_align = Alignment(wrap_text=True, vertical="top")
     thin = Side(style="thin")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
     wb = Workbook()
     wb.remove(wb.active)                                 # 移除預設的空白工作表
-    for name, (cols, rows) in build_sheets(devices, aps).items():
+    for name, (cols, rows) in sheets.items():
         ws = wb.create_sheet(name)
         ws.append(cols)
         for row in rows:
@@ -1826,6 +1838,8 @@ def write_excel(path: str, devices: List[Dict], aps: List[Dict]):
                     cell.fill, cell.font, cell.alignment = header_fill, header_font, header_align
                 else:
                     cell.font = data_font
+                    if isinstance(cell.value, str) and "\n" in cell.value and name in COMPARE_SHEETS:
+                        cell.alignment = wrap_align      # 比對報表的多行說明自動換行
                     widths[c_idx] = max(widths[c_idx], _cell_width(cell.value))
                 cell.border = border
         for c_idx, w in enumerate(widths):
@@ -1833,17 +1847,370 @@ def write_excel(path: str, devices: List[Dict], aps: List[Dict]):
     wb.save(path)
 
 
+def write_excel(path: str, devices: List[Dict], aps: List[Dict]):
+    """維護報表：Report / AP Info / WLC Info / Switch Info（+ 廠牌分頁）。"""
+    write_workbook(path, build_sheets(devices, aps))
+
+
 def default_report_name() -> str:
     return f"Network_Analysis_{datetime.now():%m%d_%H%M}.xlsx"
 
 
 # ==============================================================================
-# 15. GUI（Tkinter）
+# 15. 維護設備比對（V23）：上季 / 本季兩份維護報表 → 差異報表
+# ==============================================================================
+#
+# 輸入是本工具產出的維護報表（.xlsx），不需要原始 Log。
+#   ① 讀取 Switch Info / WLC Info / Fortigate Info / AP Info
+#   ② Stack / HA 非首列的「○」補成首列的值（○ (Stack) / ○ (HA) → 首列 Hostname）
+#   ③ 以 Serial Number 配對（序號在換機、改名、改 IP 後都不會變）；
+#      沒有序號時改用 Hostname + Model，並列入「需人工確認」
+#   ④ 分類：新增 / 移除 / 換機與成員變更 / 欄位異動 / 新增 AP / 移除 AP
+# CPU / Memory 是收 Log 當下的數值，每季本來就不同，不列入異動。
+
+COMPARE_DEVICE_SHEETS = (("Switch Info", "Switch"), ("WLC Info", "WLC"), ("Fortigate Info", "FortiGate"))
+COMPARE_FIELDS = ("Model", "OOB IP", "Firmware Version", "HA Role", "Fan Status", "Power Status")
+COMPARE_SHEETS = ("摘要", "新增設備", "移除設備", "換機與成員變更", "欄位異動", "新增 AP", "移除 AP", "需人工確認")
+DEVICE_LIST_COLS = ["類型", "Hostname", "位置", "Model", "OOB IP", "Serial Number",
+                    "Firmware Version", "Source File"]
+REPLACE_COLS = ["類型", "Hostname", "位置", "判定", "上季 Model", "上季 Serial", "本季 Model",
+                "本季 Serial", "本季 Source File"]
+CHANGE_COLS = ["類型", "Hostname", "位置", "Serial Number", "欄位", "上季", "本季"]
+REVIEW_COLS = ["類型", "Hostname", "Model", "Serial Number", "季別", "原因"]
+NO_SERIAL = {"", "N/A", "NA", "-", "UNKNOWN", MARK}
+SYSLOG_ALERT_RE = re.compile(r"FAIL\w*|FAULT\w*|CRITICAL|SHUTDOWN|OVER[ _-]?TEMP\w*", re.I)
+SYSLOG_STAMP_RE = re.compile(
+    r"^[\s*.]*(?:\w{3}\s+\d{1,2}\s+(?:\d{4}\s+)?|\d{4}[-/]\d{1,2}[-/]\d{1,2}[ T]?)?"
+    r"(?:\d{1,2}:\d{2}:\d{2}(?:\.\d+)?)?\s*(?:[A-Z]{2,5}\s*)?:?\s*")
+ALERT_SHOW = 5                                   # 欄位異動中每台最多列出幾筆新增告警
+
+
+class CompareError(ValueError):
+    """輸入檔不是本工具產出的維護報表。"""
+
+
+@dataclass
+class ReportDevice:
+    kind: str                        # Switch / WLC / FortiGate
+    host: str                        # 已補齊的 Hostname（群組成員 = 首列 Hostname）
+    pos: str                         # 群組內位置：成員 N（Stack）/ 機箱 N（HA）；單機為空
+    values: Dict[str, str]
+    serial: str                      # 正規化序號；無效時為空字串
+
+    def key(self) -> Tuple:
+        return ("SN", self.serial) if self.serial else ("HM", self.kind, self.host.upper(),
+                                                        self.values.get("Model", "").upper())
+
+    def label(self) -> str:
+        return f"{self.host} {self.pos}".strip()
+
+
+@dataclass
+class ReportData:
+    name: str
+    devices: List[ReportDevice]
+    aps: List[Dict[str, str]]
+
+
+@dataclass
+class CompareResult:
+    old: ReportData
+    new: ReportData
+    sheets: Dict[str, List[Dict[str, str]]]      # 分頁名稱 → 資料列（摘要除外）
+
+    def counts(self) -> Dict[str, int]:
+        return {name: len(rows) for name, rows in self.sheets.items()}
+
+
+def _norm_serial(value) -> str:
+    s = str(value or "").strip().upper()
+    return "" if s in NO_SERIAL else s
+
+
+def _cell_text(value) -> str:
+    return "" if value is None else str(value).strip()
+
+
+def load_report(path: str) -> ReportData:
+    """讀取維護報表：補齊「○」、標上群組位置。不是本工具產出的報表時丟出 CompareError。"""
+    from openpyxl import load_workbook
+    name = os.path.basename(path)
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+    except Exception as e:
+        raise CompareError(f"{name} 無法開啟（{e}）") from e
+    try:
+        if "Switch Info" not in wb.sheetnames or "AP Info" not in wb.sheetnames:
+            raise CompareError(f"{name} 不是本工具產出的維護報表（找不到 Switch Info / AP Info 分頁）")
+
+        def rows_of(sheet: str) -> List[Dict[str, str]]:
+            if sheet not in wb.sheetnames:
+                return []
+            it = wb[sheet].iter_rows(values_only=True)
+            header = [_cell_text(h) for h in next(it, ())]
+            return [dict(zip(header, map(_cell_text, row))) for row in it if any(c is not None for c in row)]
+
+        devices: List[ReportDevice] = []
+        for sheet, kind in COMPARE_DEVICE_SHEETS:
+            rows = rows_of(sheet)
+            if rows and ("Hostname" not in rows[0] or "Serial Number" not in rows[0]):
+                raise CompareError(f"{name} 的 {sheet} 分頁缺少 Hostname / Serial Number 欄位")
+            groups: List[List[Dict[str, str]]] = []
+            for r in rows:
+                if r.get("Hostname", "").startswith(MARK) and groups:
+                    groups[-1].append(r)            # 「○ (Stack)」「○ (HA)」屬於上一個群組
+                else:
+                    groups.append([r])
+            for members in groups:
+                head = members[0]
+                is_ha = len(members) > 1 and members[1].get("Hostname", "").endswith("(HA)")
+                for i, r in enumerate(members):
+                    values = {k: (head.get(k, "") if v == MARK else v) for k, v in r.items()}
+                    values["Hostname"] = head.get("Hostname", "")
+                    pos = (f"機箱 {i + 1}" if is_ha else f"成員 {i + 1}") if len(members) > 1 else ""
+                    devices.append(ReportDevice(kind, values["Hostname"], pos, values,
+                                                _norm_serial(values.get("Serial Number"))))
+        aps = [r for r in rows_of("AP Info") if r.get("AP Name") or r.get("AP Serial Number")]
+        return ReportData(name, devices, aps)
+    finally:
+        wb.close()
+
+
+def _alert_lines(log_text: str) -> Dict[str, str]:
+    """System Log 中含 FAIL / FAULT / CRITICAL / SHUTDOWN / OVERTEMP 的訊息（去掉時間戳記後當鍵）。"""
+    out: Dict[str, str] = {}
+    for line in log_text.splitlines():
+        line = line.strip()
+        if not line or not SYSLOG_ALERT_RE.search(line):
+            continue
+        key = line[line.index("%"):] if "%" in line else SYSLOG_STAMP_RE.sub("", line, count=1)
+        out.setdefault(key, line)
+    return out
+
+
+def _device_row(d: ReportDevice) -> Dict[str, str]:
+    return {"類型": d.kind, "Hostname": d.host, "位置": d.pos, **{c: d.values.get(c, "") for c in
+            ("Model", "OOB IP", "Serial Number", "Firmware Version", "Source File")}}
+
+
+def _index(items, key_fn, report: str, review: List[Dict[str, str]], describe) -> Dict[Tuple, object]:
+    """以 key_fn 建索引；重複的鍵只保留第一筆，其餘列入「需人工確認」。"""
+    idx: Dict[Tuple, object] = {}
+    for it in items:
+        k = key_fn(it)
+        if k in idx:
+            why = "序號重複" if k[0] == "SN" else "無序號且名稱 / 型號重複"
+            review.append({**describe(it), "季別": report, "原因": f"{why}，只比對第一筆"})
+        else:
+            idx[k] = it
+    return idx
+
+
+def _diff_devices(old: ReportData, new: ReportData, sheets: Dict[str, List[Dict[str, str]]]):
+    review = sheets["需人工確認"]
+    describe = lambda d: {"類型": d.kind, "Hostname": d.label(), "Model": d.values.get("Model", ""),
+                          "Serial Number": d.values.get("Serial Number", "")}
+    o_idx = _index(old.devices, ReportDevice.key, "上季", review, describe)
+    n_idx = _index(new.devices, ReportDevice.key, "本季", review, describe)
+
+    # ── 配對成功：逐欄比較 ─────────────────────────────────────────────────
+    changes: List[Dict[str, str]] = []
+    group_sizes = Counter((d.kind, d.host) for d in new.devices)
+    for k, nd in n_idx.items():
+        od = o_idx.get(k)
+        if od is None:
+            continue
+        if k[0] == "HM":
+            review.append({**describe(nd), "季別": "兩季", "原因": "無序號，以 Hostname + Model 配對，請確認是否為同一台"})
+        base = {"類型": nd.kind, "Hostname": nd.host, "位置": nd.pos,
+                "Serial Number": nd.values.get("Serial Number", "")}
+        if od.host != nd.host:
+            changes.append({**base, "欄位": "Hostname（改名）", "上季": od.host, "本季": nd.host})
+        for col in COMPARE_FIELDS:
+            a, b = od.values.get(col, ""), nd.values.get(col, "")
+            if col in nd.values and col in od.values and a != b:
+                changes.append({**base, "欄位": col, "上季": a, "本季": b})
+        old_alerts = _alert_lines(od.values.get("System Log", ""))
+        new_alerts = [v for key, v in _alert_lines(nd.values.get("System Log", "")).items()
+                      if key not in old_alerts]
+        if new_alerts:
+            shown = new_alerts[:ALERT_SHOW]
+            more = f"\n…另 {len(new_alerts) - ALERT_SHOW} 筆" if len(new_alerts) > ALERT_SHOW else ""
+            changes.append({**base, "欄位": "System Log（新增告警）", "上季": "",
+                            "本季": "\n".join(shown) + more})
+
+    # 同一群組多台成員有相同異動（例如 Stack 一起升級韌體）→ 合併成一列
+    merged: Dict[Tuple, List[Dict[str, str]]] = {}
+    for c in changes:
+        merged.setdefault((c["類型"], c["Hostname"], c["欄位"], c["上季"], c["本季"]), []).append(c)
+    for (kind, host, *_), rows in merged.items():
+        if len(rows) > 1:
+            pos = (f"全部 {len(rows)} 台" if len(rows) == group_sizes[(kind, host)]
+                   else "、".join(r["位置"] for r in rows))
+            rows = [{**rows[0], "位置": pos, "Serial Number": ""}]
+        sheets["欄位異動"].extend(rows)
+
+    # ── 未配對：同 Hostname → 換機 / 成員增減；其餘 → 新增 / 移除 ──────────────
+    o_left = [d for k, d in o_idx.items() if k not in n_idx]
+    n_left = [d for k, d in n_idx.items() if k not in o_idx]
+    for d in o_left + n_left:
+        if not d.serial:
+            in_new = d in n_left
+            review.append({**describe(d), "季別": "本季" if in_new else "上季",
+                           "原因": f"無序號且找不到{'上季' if in_new else '本季'}的同名同型號設備，"
+                                   f"無法判斷是否為{'新增' if in_new else '移除'}"})
+    o_left = [d for d in o_left if d.serial]
+    n_left = [d for d in n_left if d.serial]
+    old_hosts = {(d.kind, d.host.upper()) for d in old.devices}
+    new_hosts = {(d.kind, d.host.upper()) for d in new.devices}
+    for kind_host in sorted({(d.kind, d.host.upper()) for d in n_left} | {(d.kind, d.host.upper()) for d in o_left}):
+        gone = [d for d in o_left if (d.kind, d.host.upper()) == kind_host]
+        came = [d for d in n_left if (d.kind, d.host.upper()) == kind_host]
+        if kind_host not in old_hosts:              # 上季沒有這個 Hostname → 全新設備
+            sheets["新增設備"].extend(_device_row(d) for d in came)
+            continue
+        if kind_host not in new_hosts:              # 本季沒有這個 Hostname → 整組下線
+            sheets["移除設備"].extend(_device_row(d) for d in gone)
+            continue
+        group = len([d for d in new.devices if (d.kind, d.host.upper()) == kind_host]) > 1 or \
+            len([d for d in old.devices if (d.kind, d.host.upper()) == kind_host]) > 1
+        gone_by_pos = {d.pos: d for d in gone}
+        pairs: List[Tuple[Optional[ReportDevice], Optional[ReportDevice]]] = []
+        for d in came:                              # 同位置優先配對，其次依序配對
+            o = gone_by_pos.pop(d.pos, None) if d.pos in gone_by_pos else None
+            pairs.append((o, d))
+        rest = list(gone_by_pos.values())
+        pairs = [(o or (rest.pop(0) if rest else None), n) for o, n in pairs] + [(o, None) for o in rest]
+        for o, n in pairs:
+            ref = n or o
+            unit = "機箱" if ref.pos.startswith("機箱") else "成員"
+            verdict = (f"{unit}換新" if group else "換機") if o and n else (f"{unit}新增" if n else f"{unit}移除")
+            sheets["換機與成員變更"].append({
+                "類型": ref.kind, "Hostname": ref.host, "位置": ref.pos, "判定": verdict,
+                "上季 Model": o.values.get("Model", "") if o else "",
+                "上季 Serial": o.values.get("Serial Number", "") if o else "",
+                "本季 Model": n.values.get("Model", "") if n else "",
+                "本季 Serial": n.values.get("Serial Number", "") if n else "",
+                "本季 Source File": n.values.get("Source File", "") if n else ""})
+
+
+def _ap_key(ap: Dict[str, str]) -> Tuple:
+    sn = _norm_serial(ap.get("AP Serial Number"))
+    if sn:
+        return ("SN", sn)
+    mac = mac_key(ap.get("Ethernet MAC", ""))
+    return ("MAC", mac) if mac else ("NAME", ap.get("AP Name", "").upper())
+
+
+def _diff_aps(old: ReportData, new: ReportData, sheets: Dict[str, List[Dict[str, str]]]):
+    review = sheets["需人工確認"]
+    describe = lambda a: {"類型": "AP", "Hostname": a.get("AP Name", ""), "Model": a.get("AP Model", ""),
+                          "Serial Number": a.get("AP Serial Number", "")}
+    o_idx = _index(old.aps, _ap_key, "上季", review, describe)
+    n_idx = _index(new.aps, _ap_key, "本季", review, describe)
+    pick = lambda a: {c: a.get(c, "") for c in AP_COLS}
+    for k, a in n_idx.items():
+        o = o_idx.get(k)
+        if o and o.get("AP Name") != a.get("AP Name"):
+            sheets["欄位異動"].append({"類型": "AP", "Hostname": a.get("AP Name", ""), "位置": "",
+                                    "Serial Number": a.get("AP Serial Number", ""),
+                                    "欄位": "AP Name（改名）", "上季": o.get("AP Name", ""),
+                                    "本季": a.get("AP Name", "")})
+    gone = {k: a for k, a in o_idx.items() if k not in n_idx}
+    came = {k: a for k, a in n_idx.items() if k not in o_idx}
+    gone_by_name = {a.get("AP Name", "").upper(): k for k, a in gone.items() if a.get("AP Name")}
+    for k, a in list(came.items()):                 # 同名 AP 換了序號 → AP 換機
+        ok = gone_by_name.pop(a.get("AP Name", "").upper(), None)
+        if ok is None:
+            continue
+        o = gone.pop(ok)
+        del came[k]
+        sheets["換機與成員變更"].append({
+            "類型": "AP", "Hostname": a.get("AP Name", ""), "位置": "", "判定": "AP 換機",
+            "上季 Model": o.get("AP Model", ""), "上季 Serial": o.get("AP Serial Number", ""),
+            "本季 Model": a.get("AP Model", ""), "本季 Serial": a.get("AP Serial Number", ""),
+            "本季 Source File": a.get("Source File", "")})
+    sheets["新增 AP"].extend(pick(a) for a in came.values())
+    sheets["移除 AP"].extend(pick(a) for a in gone.values())
+
+
+def compare_reports(old_path: str, new_path: str) -> CompareResult:
+    """上季 / 本季維護報表比對；兩份路徑相同或內容無法讀取時丟出 CompareError。"""
+    old, new = load_report(old_path), load_report(new_path)
+    sheets: Dict[str, List[Dict[str, str]]] = {name: [] for name in COMPARE_SHEETS[1:]}
+    _diff_devices(old, new, sheets)
+    _diff_aps(old, new, sheets)
+    return CompareResult(old, new, sheets)
+
+
+def build_compare_sheets(result: CompareResult) -> Dict[str, Sheet]:
+    """比對報表分頁；沒有差異的分頁仍建立，內容寫「無」，代表已檢查過。"""
+    c = result.counts()
+    summary = [
+        ["上季報表", result.old.name], ["本季報表", result.new.name],
+        ["上季設備數", len(result.old.devices)], ["本季設備數", len(result.new.devices)],
+        ["上季 AP 數", len(result.old.aps)], ["本季 AP 數", len(result.new.aps)],
+        *[[name, c[name]] for name in COMPARE_SHEETS[1:]],
+        ["比對時間", f"{datetime.now():%Y-%m-%d %H:%M}"],
+        ["說明", "以 Serial Number 配對；CPU / Memory 為收 Log 當下的數值，不列入異動"],
+        ["版本", f"Network Analysis Tool {APP_VERSION}"],
+    ]
+    col_map = {"新增設備": DEVICE_LIST_COLS, "移除設備": DEVICE_LIST_COLS, "換機與成員變更": REPLACE_COLS,
+               "欄位異動": CHANGE_COLS, "新增 AP": AP_COLS, "移除 AP": AP_COLS, "需人工確認": REVIEW_COLS}
+    sheets: Dict[str, Sheet] = {"摘要": (["項目", "內容"], summary)}
+    for name, cols in col_map.items():
+        rows = result.sheets[name]
+        sheets[name] = _table(rows, cols) if rows else (cols, [["無"] + [""] * (len(cols) - 1)])
+    return sheets
+
+
+def write_compare_excel(path: str, result: CompareResult):
+    write_workbook(path, build_compare_sheets(result))
+
+
+def compare_items(result: CompareResult) -> List[Tuple[str, str, str]]:
+    """每筆差異一行（類別, 名稱, 說明），GUI / CLI 記錄與網頁版預覽共用。"""
+    s, items = result.sheets, []
+    model_ip = lambda d, last: "｜".join(v for v in (d["Model"], d[last]) if v)
+    name = lambda d: f"{d['Hostname']} {d['位置']}".strip()
+    items += [("新增設備", name(d), model_ip(d, "OOB IP")) for d in s["新增設備"]]
+    items += [("移除設備", name(d), model_ip(d, "Serial Number")) for d in s["移除設備"]]
+    items += [(d["判定"], name(d), f"{d['上季 Serial'] or '—'} → {d['本季 Serial'] or '—'}")
+              for d in s["換機與成員變更"]]
+    for d in s["欄位異動"]:
+        new_val = d["本季"].split("\n")[0] + (" …" if "\n" in d["本季"] else "")
+        items.append(("欄位異動", name(d), f"{d['欄位']}：{d['上季'] or '—'} → {new_val}"))
+    items += [("新增 AP", a["AP Name"], model_ip({"Model": a["AP Model"], "IP": a["IP Address"]}, "IP"))
+              for a in s["新增 AP"]]
+    items += [("移除 AP", a["AP Name"], a["AP Serial Number"]) for a in s["移除 AP"]]
+    items += [("需人工確認", d["Hostname"], f"（{d['季別']}）{d['原因']}") for d in s["需人工確認"]]
+    return items
+
+
+def compare_log_lines(result: CompareResult) -> List[str]:
+    """GUI / CLI 顯示用的比對摘要。"""
+    lines = [f"[比對] 上季：{result.old.name}（{len(result.old.devices)} 台設備、{len(result.old.aps)} 支 AP）",
+             f"[比對] 本季：{result.new.name}（{len(result.new.devices)} 台設備、{len(result.new.aps)} 支 AP）"]
+    lines += [f"[{cat}] {name}｜{desc}" if desc else f"[{cat}] {name}" for cat, name, desc in compare_items(result)]
+    c = result.counts()
+    lines.append("｜".join(f"{name} {c[name]}" for name in COMPARE_SHEETS[1:]))
+    return lines
+
+
+def default_compare_name(old_path: str, new_path: str) -> str:
+    stem = lambda p: os.path.splitext(os.path.basename(p))[0]
+    return f"維護設備比對_{stem(old_path)}_vs_{stem(new_path)}.xlsx"
+
+
+# ==============================================================================
+# 16. GUI（Tkinter）
 # ==============================================================================
 
 class CiscoParserApp:
     """
-    操作流程：選擇資料夾 → 產生分析報表（背景執行緒解析）→ 選擇儲存路徑 → 輸出 Excel。
+    操作流程：
+      分析 Log    ：選擇資料夾 → 產生分析報表（背景執行緒解析）→ 選擇儲存路徑 → 輸出 Excel
+      維護設備比對：選擇上季 / 本季報表 → 產生比對報表（背景執行緒比對）→ 選擇儲存路徑 → 輸出 Excel
 
     執行緒模型（V19 修正）：
       背景執行緒只做「解析」與「寫檔」，所有 Tk 呼叫（文字框、進度條、對話框）
@@ -1884,6 +2251,10 @@ class CiscoParserApp:
         self.root.minsize(max(int(480 * scale), 380), max(int(400 * scale), 260))
 
         self.selected_path = tk.StringVar()
+        self.old_report = tk.StringVar()
+        self.new_report = tk.StringVar()
+        self.mode = "analyze"                             # analyze / compare
+        self.compare_result: Optional[CompareResult] = None
         self.devices: List[Dict] = []
         self.aps: List[Dict] = []
         self._is_dark = False
@@ -1927,6 +2298,19 @@ class CiscoParserApp:
         self.sep_top = tk.Frame(self.root, height=1)
         self.sep_top.pack(fill="x")
 
+        # 功能切換：分析 Log / 維護設備比對（V23）
+        self.mode_outer = tk.Frame(self.root)
+        self.mode_outer.pack(fill="x", padx=14, pady=(10, 0))
+        self.mode_frame = tk.Frame(self.mode_outer, padx=1, pady=1)
+        self.mode_frame.pack(side="left")
+        self.mode_tabs: Dict[str, "tk.Label"] = {}
+        for i, (mode, text) in enumerate((("analyze", "分析 Log"), ("compare", "維護設備比對"))):
+            lbl = tk.Label(self.mode_frame, text=text, font=(self.FONT_ZH, 10), padx=16, pady=4,
+                           cursor="hand2")
+            lbl.grid(row=0, column=i, padx=(1 if i else 0, 0))
+            lbl.bind("<Button-1>", lambda _e, m=mode: self.set_mode(m))
+            self.mode_tabs[mode] = lbl
+
         # 資料夾選擇列
         self.folder_frame = tk.Frame(self.root, pady=10)
         self.folder_frame.pack(fill="x", padx=14)
@@ -1944,6 +2328,15 @@ class CiscoParserApp:
                                     relief="flat", bd=0, cursor="hand2", padx=8, pady=2,
                                     command=self.select_folder)
         self.btn_folder.pack()
+
+        # 維護設備比對：上季 / 本季報表（切換到比對模式時取代資料夾列）
+        self.compare_frame = tk.Frame(self.root, pady=4)
+        self.compare_rows = [
+            self._make_path_row(self.compare_frame, "上季報表", self.old_report,
+                                lambda: self.select_report(self.old_report, "選擇上季維護報表")),
+            self._make_path_row(self.compare_frame, "本季報表", self.new_report,
+                                lambda: self.select_report(self.new_report, "選擇本季維護報表")),
+        ]
 
         # 佈局順序：先把固定高度元件鎖在底部，Log 文字框最後 pack 取剩餘空間
         self.btn_frame = tk.Frame(self.root, height=70)
@@ -1978,6 +2371,39 @@ class CiscoParserApp:
                                bd=6, wrap="word")
         self.txt_log.pack(fill="both", expand=True)
 
+    def _make_path_row(self, parent, text: str, var: "tk.StringVar", command) -> Dict[str, object]:
+        """標籤 + 唯讀路徑框 + 🗁 按鈕（比對模式的上季 / 本季報表列）。"""
+        row = tk.Frame(parent, pady=6)
+        row.pack(fill="x", padx=14)
+        lbl = tk.Label(row, text=text, font=(self.FONT_ZH, 10), width=8, anchor="w")
+        lbl.pack(side="left", padx=(0, 8))
+        border = tk.Frame(row, bd=1, relief="flat")
+        border.pack(side="left", fill="x", expand=True)
+        entry = tk.Entry(border, textvariable=var, state="readonly", font=(self.FONT_MONO, 10),
+                         relief="flat", bd=4)
+        entry.pack(fill="x", expand=True)
+        btn_border = tk.Frame(row, padx=1, pady=1)
+        btn_border.pack(side="left", padx=(6, 0))
+        btn = tk.Button(btn_border, text="🗁", font=(self.FONT_SYM, 13), relief="flat", bd=0,
+                        cursor="hand2", padx=8, pady=2, command=command)
+        btn.pack()
+        return {"row": row, "label": lbl, "border": border, "entry": entry,
+                "btn_border": btn_border, "btn": btn}
+
+    def set_mode(self, mode: str):
+        """切換「分析 Log」/「維護設備比對」；執行中不切換。"""
+        if mode == self.mode or not self._btn_enabled:
+            return
+        self.mode = mode
+        if mode == "compare":
+            self.folder_frame.pack_forget()
+            self.compare_frame.pack(fill="x", before=self.log_border_frame)
+        else:
+            self.compare_frame.pack_forget()
+            self.folder_frame.pack(fill="x", padx=14, before=self.log_border_frame)
+        self.progress.configure(value=0)
+        self._apply_theme()
+
     # ── 主題 / 按鈕繪製 ───────────────────────────────────────────────────────
     def _theme(self) -> Dict[str, str]:
         return self.THEMES["dark" if self._is_dark else "light"]
@@ -2006,7 +2432,7 @@ class CiscoParserApp:
         self._draw_run_btn(hover=self._btn_hover)
 
     def _draw_run_btn(self, hover: bool = False):
-        """圓角矩形「產生分析報表」按鈕（四角弧 + 兩個填充矩形）。"""
+        """圓角矩形「產生分析報表 / 產生比對報表」按鈕（四角弧 + 兩個填充矩形）。"""
         c, t = self.btn_canvas, self._theme()
         c.delete("all")
         w, h, r = int(c.cget("width")), 46, 12
@@ -2018,7 +2444,8 @@ class CiscoParserApp:
             c.create_arc(x0, y0, x0 + 2 * r, y0 + 2 * r, start=start, extent=90, fill=bg, outline="")
         c.create_rectangle(r, 0, w - r, h, fill=bg, outline="")
         c.create_rectangle(0, r, w, h - r, fill=bg, outline="")
-        c.create_text(w // 2, h // 2, text="產生分析報表", fill=t["btn_run_fg"],
+        c.create_text(w // 2, h // 2, text="產生比對報表" if self.mode == "compare" else "產生分析報表",
+                      fill=t["btn_run_fg"],
                       font=(self.FONT_ZH, 11, "bold"))
 
     def _on_run_btn_click(self):
@@ -2040,8 +2467,23 @@ class CiscoParserApp:
 
     def _apply_theme(self):
         t = self._theme()
-        for w in (self.root, self.folder_frame, self.prog_frame, self.btn_frame, self.btn_canvas):
+        for w in (self.root, self.folder_frame, self.prog_frame, self.btn_frame, self.btn_canvas,
+                  self.mode_outer, self.compare_frame):
             w.config(bg=t["body_bg"] if w is not self.root else t["root_bg"])
+        self.mode_frame.config(bg=t["entry_border"])
+        for mode, lbl in self.mode_tabs.items():
+            on = mode == self.mode
+            lbl.config(bg=t["btn_run_bg"] if on else t["entry_bg"],
+                       fg=t["btn_run_fg"] if on else t["label_fg"])
+        for r in self.compare_rows:
+            r["row"].config(bg=t["body_bg"])
+            r["label"].config(bg=t["body_bg"], fg=t["label_fg"])
+            r["border"].config(bg=t["entry_border"])
+            r["entry"].config(bg=t["entry_bg"], fg=t["entry_fg"], readonlybackground=t["entry_bg"],
+                              disabledbackground=t["entry_bg"], insertbackground=t["entry_fg"])
+            r["btn_border"].config(bg=t["btn_folder_bg"] if self._is_dark else t["entry_border"])
+            r["btn"].config(bg=t["btn_folder_bg"], fg=t["btn_folder_fg"],
+                            activebackground=t["btn_run_bg"], activeforeground=t["btn_run_fg"])
         for w in (self.toolbar, self.toggle_outer, self.toggle_canvas):
             w.config(bg=t["toolbar_bg"])
         for w in (self.sep_top, self.sep_bot):
@@ -2079,6 +2521,8 @@ class CiscoParserApp:
                     self.progress.configure(value=value)
                 elif kind == "analyzed":
                     self._on_analyzed()
+                elif kind == "compared":
+                    self._on_compared(value)
                 elif kind == "saved":
                     self._on_saved(value)
         except queue.Empty:
@@ -2094,7 +2538,15 @@ class CiscoParserApp:
         if path:
             self.selected_path.set(path)
 
+    def select_report(self, var: "tk.StringVar", title: str):
+        path = filedialog.askopenfilename(title=title, filetypes=[("Excel", "*.xlsx")])
+        if path:
+            var.set(path)
+
     def start_process(self):
+        if self.mode == "compare":
+            self.start_compare()
+            return
         if not self.selected_path.get():
             messagebox.showwarning("警告", "請選擇資料夾")
             return
@@ -2136,23 +2588,104 @@ class CiscoParserApp:
                 self._ui_queue.put(("saved", e))
         threading.Thread(target=_save, daemon=True).start()
 
+    # ── 維護設備比對（V23）────────────────────────────────────────────────────
+    def start_compare(self):
+        old, new = self.old_report.get(), self.new_report.get()
+        if not old or not new:
+            messagebox.showwarning("警告", "請選擇上季與本季的維護報表")
+            return
+        if os.path.abspath(old) == os.path.abspath(new):
+            messagebox.showwarning("警告", "上季與本季選到同一份報表")
+            return
+        self._set_run_btn_state(False)
+        self.progress.configure(value=0)
+        threading.Thread(target=self._compare_worker, args=(old, new), daemon=True).start()
+
+    def _compare_worker(self, old: str, new: str):
+        """背景執行緒：讀取兩份報表並比對（不碰任何 Tk 物件）。"""
+        t0 = time.perf_counter()
+        try:
+            self.compare_result = compare_reports(old, new)
+            self._ui_queue.put(("progress", 100))
+            for line in compare_log_lines(self.compare_result):
+                self.log(line)
+            self.log(f"比對完成，耗時 {time.perf_counter() - t0:.2f} 秒")
+            self._ui_queue.put(("compared", None))
+        except Exception as e:
+            self.compare_result = None
+            self.log(f"[ERR] {e}")
+            self._ui_queue.put(("compared", e))
+
+    def _on_compared(self, error: Optional[Exception]):
+        """主執行緒：詢問比對報表儲存路徑，再交由背景執行緒寫檔。"""
+        if error or self.compare_result is None:
+            messagebox.showerror("錯誤", f"比對失敗：{error}")
+            self._set_run_btn_state(True)
+            return
+        old, new = self.old_report.get(), self.new_report.get()
+        path = filedialog.asksaveasfilename(initialfile=default_compare_name(old, new),
+                                            initialdir=os.path.dirname(new), defaultextension=".xlsx",
+                                            filetypes=[("Excel", "*.xlsx")])
+        if not path:
+            self._set_run_btn_state(True)
+            return
+        result = self.compare_result
+
+        def _save():
+            try:
+                write_compare_excel(path, result)
+                self.log(f"已儲存：{path}")
+                self._ui_queue.put(("saved", None))
+            except Exception as e:
+                self._ui_queue.put(("saved", e))
+        threading.Thread(target=_save, daemon=True).start()
+
     def _on_saved(self, error: Optional[Exception]):
         if error:
             messagebox.showerror("錯誤", f"儲存失敗: {error}")
         else:
-            messagebox.showinfo("成功", "報表已儲存")
+            messagebox.showinfo("成功", "比對報表已儲存" if self.mode == "compare" else "報表已儲存")
         self._set_run_btn_state(True)
 
 
 # ==============================================================================
-# 16. 程式進入點：無參數 → GUI；帶資料夾參數 → CLI 批次模式
+# 17. 程式進入點：無參數 → GUI；帶資料夾參數 → CLI 批次模式
 # ==============================================================================
 
+def run_compare_cli(old_path: str, new_path: str, out: Optional[str] = None) -> str:
+    """CLI 維護設備比對：印出摘要並輸出比對報表，回傳輸出路徑。"""
+    try:
+        result = compare_reports(old_path, new_path)
+    except CompareError as e:
+        sys.exit(f"[ERR] {e}")
+    out = out or os.path.join(os.path.dirname(os.path.abspath(new_path)),
+                              default_compare_name(old_path, new_path))
+    write_compare_excel(out, result)
+    print("\n".join(compare_log_lines(result)))
+    print(f"已輸出：{out}")
+    return out
+
+
 def main(argv: Optional[List[str]] = None):
-    ap = argparse.ArgumentParser(description=f"Cisco / Aruba Log 分析工具 {APP_VERSION}")
+    ap = argparse.ArgumentParser(
+        description=f"Cisco / Aruba / FortiGate Log 分析工具 {APP_VERSION}",
+        epilog="維護設備比對：--compare 上季.xlsx 本季.xlsx [-o 比對.xlsx]；"
+               "分析後順便比對：<Log資料夾> -o 本季.xlsx --compare-with 上季.xlsx")
     ap.add_argument("folder", nargs="?", help="Log 資料夾（省略則開啟 GUI）")
     ap.add_argument("-o", "--output", help="輸出 Excel 路徑（預設存在 Log 資料夾內）")
+    ap.add_argument("--compare", nargs=2, metavar=("上季.xlsx", "本季.xlsx"),
+                    help="維護設備比對：比較兩份本工具產出的維護報表")
+    ap.add_argument("--compare-with", metavar="上季.xlsx",
+                    help="分析 Log 資料夾後，再與這份上季報表比對")
     args = ap.parse_args(argv)
+
+    if args.compare:
+        if args.folder or args.compare_with:
+            ap.error("--compare 不能與 Log 資料夾或 --compare-with 同時使用")
+        run_compare_cli(*args.compare, out=args.output)
+        return
+    if args.compare_with and not args.folder:
+        ap.error("--compare-with 需要搭配 Log 資料夾")
 
     if args.folder:
         t0 = time.perf_counter()
@@ -2160,6 +2693,8 @@ def main(argv: Optional[List[str]] = None):
         out = args.output or os.path.join(args.folder, default_report_name())
         write_excel(out, devices, aps)
         print(f"完成：{len(devices)} 台設備、{len(aps)} 台 AP → {out}（{time.perf_counter() - t0:.2f} 秒）")
+        if args.compare_with:
+            run_compare_cli(args.compare_with, out)
         return
 
     if tk is None:

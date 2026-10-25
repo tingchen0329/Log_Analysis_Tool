@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Network Log Analysis Tool</title>
-<meta name="description" content="在瀏覽器內解析 Cisco / Aruba / FortiGate 設備 Log，產生 Excel 維護報告。Log 不會上傳到任何伺服器。">
+<meta name="description" content="在瀏覽器內解析 Cisco / Aruba / FortiGate 設備 Log，產生 Excel 維護報告，並比對上季與本季的維護設備。檔案不會上傳到任何伺服器。">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232f75b5'/%3E%3Cpath d='M8 22V10m8 12V14m8 8V7' stroke='white' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
 <style>
   :root {
@@ -22,6 +22,8 @@
     --ok-soft: #e4f4ea;
     --err: #b93a2f;
     --err-soft: #fbe9e7;
+    --warn: #9a5b00;
+    --warn-soft: #fbf0dc;
     --log-bg: #0f1822;
     --log-ink: #c9dcec;
     --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .08);
@@ -32,6 +34,7 @@
       --bg: #0e1319; --panel: #161e27; --ink: #e5ecf3; --muted: #92a3b5; --line: #283442;
       --accent: #4f97d8; --accent-hover: #67a8e2; --accent-ink: #0b1218; --accent-soft: #1a2a3b;
       --drop: #121921; --ok: #5cc48a; --ok-soft: #15291f; --err: #ef7d71; --err-soft: #2e1916;
+      --warn: #f0b85c; --warn-soft: #2f2414;
       --log-bg: #0a1017; --log-ink: #bcd2e6; --shadow: none; color-scheme: dark;
     }
   }
@@ -39,6 +42,7 @@
     --bg: #0e1319; --panel: #161e27; --ink: #e5ecf3; --muted: #92a3b5; --line: #283442;
     --accent: #4f97d8; --accent-hover: #67a8e2; --accent-ink: #0b1218; --accent-soft: #1a2a3b;
     --drop: #121921; --ok: #5cc48a; --ok-soft: #15291f; --err: #ef7d71; --err-soft: #2e1916;
+      --warn: #f0b85c; --warn-soft: #2f2414;
     --log-bg: #0a1017; --log-ink: #bcd2e6; --shadow: none; color-scheme: dark;
   }
 
@@ -143,12 +147,41 @@
   td.bad { color: var(--err); }
   td.num { text-align: right; color: var(--muted); }
 
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 16px; }
+  .tab {
+    font: inherit; border: none; background: none; color: var(--muted); cursor: pointer;
+    padding: 10px 16px; border-bottom: 3px solid transparent; margin-bottom: -1px;
+  }
+  .tab:hover { color: var(--ink); }
+  .tab[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); font-weight: 700; }
+  [hidden] { display: none !important; }
+
+  .slots { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+  .slot { padding: 16px 14px; text-align: left; }
+  .slot .slot-label { font-size: 13px; color: var(--muted); margin: 0 0 6px; }
+  .slot .slot-file { font-weight: 700; word-break: break-all; margin: 0 0 4px; min-height: 1.6em; }
+  .slot .slot-file.empty { font-weight: 400; color: var(--muted); }
+  .slot .slot-meta { font-size: 13px; color: var(--muted); margin: 0 0 10px; min-height: 1.4em; }
+  .slot.filled { border-style: solid; border-color: var(--ok); background: var(--ok-soft); }
+  .slot-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px;
+                  font-size: 13px; color: var(--muted); }
+  .chip.add { background: var(--ok-soft); } .chip.add b { color: var(--ok); }
+  .chip.del { background: var(--err-soft); } .chip.del b { color: var(--err); }
+  .chip.swap { background: var(--warn-soft); } .chip.swap b { color: var(--warn); }
+  .chip.rev { background: var(--drop); border: 1px solid var(--line); } .chip.rev b { color: var(--ink); }
+  td.wrap { white-space: normal; word-break: break-word; min-width: 220px; }
+  .more { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
+
   footer { color: var(--muted); font-size: 13px; padding: 0 0 32px; }
   footer a { color: var(--accent); }
   footer p { margin: 4px 0; }
 
   @media (max-width: 560px) {
     .brand small { display: none; }
+    .slots { grid-template-columns: minmax(0, 1fr); }
+    #compare-items td { white-space: normal; word-break: break-word; }
+    td.wrap { min-width: 0; }
+    .tab { padding: 10px 12px; }
     .card { padding: 14px; }
     .run .btn.primary { width: 100%; justify-content: center; }
   }
@@ -170,11 +203,17 @@
 </header>
 
 <main class="wrap">
-  <div class="notice">
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
-    <div>Log 只在你的瀏覽器內解析，<b>不會上傳</b>到任何伺服器；解析引擎與桌面版 / exe 是同一份程式。第一次開啟需下載約 14 MB 執行環境，之後會使用瀏覽器快取。</div>
+  <div class="tabs" role="tablist" aria-label="功能">
+    <button class="tab" type="button" role="tab" id="tab-analyze" aria-controls="panel-analyze" aria-selected="true">分析 Log</button>
+    <button class="tab" type="button" role="tab" id="tab-compare" aria-controls="panel-compare" aria-selected="false">維護設備比對</button>
   </div>
 
+  <div class="notice">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+    <div>Log 與報表只在你的瀏覽器內處理，<b>不會上傳</b>到任何伺服器；解析引擎與桌面版 / exe 是同一份程式。第一次開啟需下載約 14 MB 執行環境，之後會使用瀏覽器快取。</div>
+  </div>
+
+  <div id="panel-analyze" role="tabpanel" aria-labelledby="tab-analyze">
   <section class="card">
     <h2><span class="step">1</span>選擇 Log</h2>
     <div class="drop" id="drop">
@@ -234,6 +273,65 @@
       </table>
     </div>
   </section>
+  </div>
+
+  <div id="panel-compare" role="tabpanel" aria-labelledby="tab-compare" hidden>
+  <section class="card">
+    <h2><span class="step">1</span>選擇兩份維護報表</h2>
+    <div class="slots">
+      <div class="drop slot" id="slot-old" data-side="old">
+        <p class="slot-label">上季報表（基準）</p>
+        <p class="slot-file empty" id="slot-old-file">把上季的 .xlsx 拖曳到這裡</p>
+        <p class="slot-meta" id="slot-old-meta"></p>
+        <button class="btn" type="button" data-pick="old">選擇檔案</button>
+      </div>
+      <div class="drop slot" id="slot-new" data-side="new">
+        <p class="slot-label">本季報表</p>
+        <p class="slot-file empty" id="slot-new-file">把本季的 .xlsx 拖曳到這裡</p>
+        <p class="slot-meta" id="slot-new-meta"></p>
+        <button class="btn" type="button" data-pick="new">選擇檔案</button>
+      </div>
+    </div>
+    <div class="slot-actions">
+      <span>由本工具「分析 Log」產出的 .xlsx；以 Serial Number 配對，CPU / Memory 不列入異動</span>
+      <span class="spacer"></span>
+      <button class="btn link" type="button" id="swap">上下對調</button>
+      <button class="btn link" type="button" id="clear-compare">清除</button>
+    </div>
+    <input type="file" id="old-input" accept=".xlsx" hidden>
+    <input type="file" id="new-input" accept=".xlsx" hidden>
+  </section>
+
+  <section class="card">
+    <h2><span class="step">2</span>比對</h2>
+    <div class="run">
+      <button class="btn primary" type="button" id="run-compare" disabled>開始比對</button>
+      <div class="progress">
+        <div class="bar"><i id="bar-compare"></i></div>
+        <div class="status" id="status-compare" aria-live="polite">正在準備執行環境…</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card result" id="result-compare">
+    <div class="result-head">
+      <h2 style="margin:0"><span class="step">3</span>比對結果</h2>
+      <span class="spacer"></span>
+      <a class="btn primary" id="download-compare" href="#" download>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M5 21h14"/></svg>
+        下載比對報表
+      </a>
+    </div>
+    <div class="chips" id="chips-compare"></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>類別</th><th>名稱</th><th>說明</th></tr></thead>
+        <tbody id="compare-items"></tbody>
+      </table>
+    </div>
+    <p class="more" id="compare-more"></p>
+  </section>
+  </div>
 
   <pre class="log" id="log" aria-label="執行紀錄"></pre>
 </main>
@@ -268,6 +366,8 @@
   let ready = false;
   let running = false;
   let downloadUrl = null;
+  const reports = { old: null, new: null };     // 維護設備比對的兩份 .xlsx
+  let compareUrl = null;
 
   function setStatus(text) { $("status").textContent = text; }
   function setProgress(done, total) { $("bar").style.width = total ? `${Math.round(done / total * 100)}%` : "0"; }
@@ -286,7 +386,29 @@
     if (bytes >= 1048576) return `${(bytes / 1048576).toFixed(1)} MB`;
     return `${Math.max(1, Math.round(bytes / 1024))} KB`;
   }
-  function updateRunButton() { $("run").disabled = !ready || running || selected.size === 0; }
+  function updateRunButton() {
+    $("run").disabled = !ready || running || selected.size === 0;
+    $("run-compare").disabled = !ready || running || !reports.old || !reports.new;
+  }
+
+  // ── 標籤頁：分析 Log / 維護設備比對（網址 #compare 可直接開啟比對頁）─────────
+  const TABS = ["analyze", "compare"];
+  function showTab(name, updateHash) {
+    for (const t of TABS) {
+      $(`tab-${t}`).setAttribute("aria-selected", String(t === name));
+      $(`tab-${t}`).tabIndex = t === name ? 0 : -1;
+      $(`panel-${t}`).hidden = t !== name;
+    }
+    if (updateHash) history.replaceState(null, "", name === "compare" ? "#compare" : location.pathname + location.search);
+  }
+  for (const t of TABS) $(`tab-${t}`).addEventListener("click", () => showTab(t, true));
+  $("tab-analyze").parentElement.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    const next = $("tab-analyze").getAttribute("aria-selected") === "true" ? "compare" : "analyze";
+    showTab(next, true);
+    $(`tab-${next}`).focus();
+  });
+  showTab(location.hash === "#compare" ? "compare" : "analyze", false);
 
   // ── 選檔：過濾副檔名、略過 Office 暫存檔（~$）、同名檔自動加編號 ───────────
   function accept(file) {
@@ -371,6 +493,117 @@
   window.addEventListener("dragover", (e) => e.preventDefault());
   window.addEventListener("drop", (e) => e.preventDefault());
 
+  // ── 維護設備比對：兩個檔案框（拖放或選檔，只收 .xlsx）──────────────────────
+  const isReport = (f) => f.name.toLowerCase().endsWith(".xlsx") && !f.name.startsWith("~$");
+  function setStatusCompare(text) { $("status-compare").textContent = text; }
+  function renderReports() {
+    for (const side of ["old", "new"]) {
+      const f = reports[side];
+      const name = $(`slot-${side}-file`);
+      name.textContent = f ? f.name : `把${side === "old" ? "上季" : "本季"}的 .xlsx 拖曳到這裡`;
+      name.classList.toggle("empty", !f);
+      $(`slot-${side}-meta`).textContent = f ? formatSize(f.size) : "";
+      $(`slot-${side}`).classList.toggle("filled", Boolean(f));
+    }
+    if (ready && !running) {
+      setStatusCompare(reports.old && reports.new ? "請按「開始比對」" : "請選擇上季與本季的維護報表");
+    }
+    updateRunButton();
+  }
+  function setReport(side, files) {
+    const list = [...files];
+    const good = list.filter(isReport);
+    if (!good.length) {
+      if (list.length) setStatusCompare("請選擇本工具產出的 .xlsx 維護報表");
+      return;
+    }
+    reports[side] = good[0];
+    if (good.length > 1) reports[side === "old" ? "new" : "old"] = good[1];   // 一次拖兩個檔：依序放入兩格
+    renderReports();
+  }
+  for (const side of ["old", "new"]) {
+    const slot = $(`slot-${side}`);
+    const input = $(`${side}-input`);
+    slot.querySelector("[data-pick]").addEventListener("click", () => input.click());
+    input.addEventListener("change", (e) => { setReport(side, e.target.files); e.target.value = ""; });
+    for (const type of ["dragenter", "dragover"]) {
+      slot.addEventListener(type, (e) => { e.preventDefault(); slot.classList.add("over"); });
+    }
+    for (const type of ["dragleave", "drop"]) {
+      slot.addEventListener(type, () => slot.classList.remove("over"));
+    }
+    slot.addEventListener("drop", (e) => { e.preventDefault(); setReport(side, e.dataTransfer.files); });
+  }
+  $("swap").addEventListener("click", () => {
+    [reports.old, reports.new] = [reports.new, reports.old];
+    renderReports();
+  });
+  $("clear-compare").addEventListener("click", () => {
+    reports.old = reports.new = null;
+    $("result-compare").classList.remove("show");
+    renderReports();
+  });
+
+  const CHIP_CLASS = { "新增設備": "add", "新增 AP": "add", "移除設備": "del", "移除 AP": "del",
+                       "換機與成員變更": "swap", "欄位異動": "", "需人工確認": "rev" };
+  const ITEM_LIMIT = 300;
+  function showCompare(m) {
+    if (compareUrl) URL.revokeObjectURL(compareUrl);
+    compareUrl = URL.createObjectURL(new Blob([m.xlsx], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }));
+    const link = $("download-compare");
+    link.href = compareUrl;
+    link.download = m.fileName;
+
+    $("chips-compare").replaceChildren(...m.counts.map(([name, count]) => {
+      const chip = document.createElement("span");
+      chip.className = `chip ${count ? CHIP_CLASS[name] || "" : "rev"}`;
+      chip.append(`${name} `);
+      const b = document.createElement("b"); b.textContent = count;
+      chip.append(b);
+      return chip;
+    }));
+    const items = m.items.slice(0, ITEM_LIMIT);
+    $("compare-items").replaceChildren(...(items.length ? items : [["—", "兩季沒有差異", ""]]).map((cells) => {
+      const tr = document.createElement("tr");
+      cells.forEach((text, i) => {
+        const td = document.createElement("td");
+        td.textContent = text;
+        if (i === 2) td.className = "wrap";
+        tr.appendChild(td);
+      });
+      return tr;
+    }));
+    $("compare-more").textContent = m.items.length > ITEM_LIMIT
+      ? `只顯示前 ${ITEM_LIMIT} 筆，共 ${m.items.length} 筆；完整內容請下載比對報表` : "";
+
+    $("bar-compare").style.width = "100%";
+    setStatusCompare(`比對完成：上季 ${m.old.devices} 台設備 / ${m.old.aps} 支 AP → 本季 ${m.new.devices} 台設備 / ${m.new.aps} 支 AP`);
+    logLine(`比對報表完成：${m.fileName}`);
+    $("result-compare").classList.add("show");
+    $("result-compare").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  $("run-compare").addEventListener("click", async () => {
+    if (!ready || running || !reports.old || !reports.new) return;
+    running = true;
+    updateRunButton();
+    $("result-compare").classList.remove("show");
+    $("bar-compare").style.width = "30%";
+    setStatusCompare("比對中…");
+    logLine(`開始比對：${reports.old.name} → ${reports.new.name}`);
+    try {
+      const old = { name: reports.old.name, data: await reports.old.arrayBuffer() };
+      const now = { name: reports.new.name, data: await reports.new.arrayBuffer() };
+      worker.postMessage({ type: "compare", old, new: now }, [old.data, now.data]);
+    } catch (err) {
+      running = false;
+      updateRunButton();
+      setStatusCompare(`讀取檔案失敗：${err && err.message ? err.message : err}`);
+    }
+  });
+
   // ── Worker：在瀏覽器內執行 Python（Pyodide）──────────────────────────────
   const pill = $("version");
   let worker;
@@ -384,6 +617,7 @@
     pill.textContent = "無法載入";
     pill.className = "pill bad";
     setStatus(text);
+    setStatusCompare(text);
     logLine(text, "err");
   }
   worker.addEventListener("error", (e) => {
@@ -402,7 +636,7 @@
         pill.className = "pill ready";
         setStatus("請先選擇 Log，再按「開始分析」");
         logLine(`就緒（${m.version}）`);
-        updateRunButton();
+        renderReports();
         break;
       case "log":
         logLine(m.text);
@@ -416,10 +650,21 @@
         showResult(m);
         updateRunButton();
         break;
+      case "compared":
+        running = false;
+        showCompare(m);
+        updateRunButton();
+        break;
       case "error":
         running = false;
-        setStatus(`分析失敗：${m.text}`);
-        logLine(`分析失敗：${m.text}`, "err");
+        if (m.job === "compare") {
+          $("bar-compare").style.width = "0";
+          setStatusCompare(`比對失敗：${m.text}`);
+          logLine(`比對失敗：${m.text}`, "err");
+        } else {
+          setStatus(`分析失敗：${m.text}`);
+          logLine(`分析失敗：${m.text}`, "err");
+        }
         updateRunButton();
         break;
       case "fatal":

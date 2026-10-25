@@ -305,7 +305,7 @@ class TestExcel(unittest.TestCase):
             self.assertEqual(sheets[name][-1], "Source File")
 
     def test_all_fixtures_rows_by_sheet(self):
-        names = sorted(os.listdir(FIXTURES))
+        names = sorted(n for n in os.listdir(FIXTURES) if n.lower().endswith(cla.LOG_EXTS))
         devices, aps, results = analyze(*names)
         self.assertFalse([r.source for r in results if r.error or r.dev_type == "Unknown"])
         sheets = cla.build_sheets(devices, aps)

@@ -19,7 +19,7 @@ if not "%MSG%"=="" (
     git commit -m "%MSG%" || goto :error
 )
 set "TAG="
-set /p TAG=要建立版本 tag 嗎？輸入例如 v22（Enter 略過）：
+set /p TAG=要建立版本 tag 嗎？輸入例如 v23（Enter 略過）：
 if not "%TAG%"=="" git tag -a %TAG% -m "%TAG%" || goto :error
 
 git push origin main --follow-tags || goto :error

@@ -6,7 +6,8 @@
 // 以 vm.SourceTextModule 載入 worker.js 與 pyodide.mjs（不定義 process，Pyodide 會走瀏覽器 Worker 分支），
 // fetch 與動態 import 都對應到 _site 內的檔案，因此測到的是實際部署到 GitHub Pages 的同一份程式碼。
 // 檢查：版本號與 Cisco_Log_Analysis.py 一致、每個檔案都判定成功、分頁清單正確、輸出為有效的 xlsx。
-// --out 可另存網頁版產生的 Excel，用來與 CPython 版逐格比對。
+// 維護設備比對（V23）：Log 資料夾內有 compare_2026Q2.xlsx / compare_2026Q3.xlsx 時一併測試比對。
+// --out 可另存網頁版產生的 Excel，用來與 CPython 版逐格比對；--compare-out 另存比對報表。
 // =============================================================================
 "use strict";
 
@@ -26,9 +27,11 @@ const path = require("node:path");
 const args = process.argv.slice(2);
 const outIdx = args.indexOf("--out");
 const outFile = outIdx >= 0 ? args.splice(outIdx, 2)[1] : null;
+const cmpIdx = args.indexOf("--compare-out");
+const compareOutFile = cmpIdx >= 0 ? args.splice(cmpIdx, 2)[1] : null;
 const [siteArg, logArg] = args;
 if (!siteArg || !logArg) {
-  console.error("用法：node --no-warnings web/smoke_test.cjs <_site> <Log 資料夾> [--out 報表.xlsx]");
+  console.error("用法：node --no-warnings web/smoke_test.cjs <_site> <Log 資料夾> [--out 報表.xlsx] [--compare-out 比對.xlsx]");
   process.exit(2);
 }
 const SITE = path.resolve(siteArg);
@@ -36,6 +39,10 @@ const LOGS = path.resolve(logArg);
 const ORIGIN = "https://pages.test/Log_Analysis_Tool/";
 const LOG_EXTS = [".log", ".txt", ".conf"];
 const TIMEOUT_MS = 300000;
+const COMPARE_FILES = ["compare_2026Q2.xlsx", "compare_2026Q3.xlsx"];
+// 與 tests/compare_scenario.py 的情境一致（tests/test_compare.py 以 CPython 驗證同一組數字）
+const COMPARE_EXPECTED = { "新增設備": 2, "移除設備": 1, "換機與成員變更": 3, "欄位異動": 6,
+                           "新增 AP": 2, "移除 AP": 1, "需人工確認": 1 };
 
 function fail(message) {
   console.error(`✗ ${message}`);
@@ -136,7 +143,6 @@ async function main() {
   const t0 = Date.now();
   context.onmessage({ data: { type: "analyze", files } });
   const done = await waitFor((m) => m.type === "done", "分析");
-  clearTimeout(timer);
   console.log(`✓ 分析 ${names.length} 個檔案，${((Date.now() - t0) / 1000).toFixed(2)} 秒`);
 
   const progress = messages.filter((m) => m.type === "progress");
@@ -159,6 +165,40 @@ async function main() {
     fs.writeFileSync(outFile, xlsx);
     console.log(`✓ Excel 已存到 ${outFile}（${xlsx.length} bytes）`);
   }
+  if (COMPARE_FILES.every((n) => fs.existsSync(path.join(LOGS, n)))) {
+    const [oldFile, newFile] = COMPARE_FILES.map((name) => {
+      const buf = fs.readFileSync(path.join(LOGS, name));
+      return { name, data: buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) };
+    });
+    const t1 = Date.now();
+    context.onmessage({ data: { type: "compare", old: oldFile, new: newFile } });
+    const cmp = await waitFor((m) => m.type === "compared", "比對");
+    const counts = Object.fromEntries(cmp.counts);
+    if (JSON.stringify(counts) !== JSON.stringify(COMPARE_EXPECTED)) fail(`比對結果不符：${JSON.stringify(counts)}`);
+    if (cmp.items.length !== Object.values(COMPARE_EXPECTED).reduce((a, b) => a + b, 0)) fail(`比對明細筆數不符：${cmp.items.length}`);
+    const cmpXlsx = Buffer.from(cmp.xlsx);
+    if (cmpXlsx.length < 1000 || cmpXlsx.subarray(0, 2).toString() !== "PK") fail("比對輸出不是有效的 xlsx");
+    console.log(`✓ 維護設備比對：${cmp.counts.map(([n, c]) => `${n} ${c}`).join("、")}（${((Date.now() - t1) / 1000).toFixed(2)} 秒）`);
+    if (compareOutFile) {
+      fs.writeFileSync(compareOutFile, cmpXlsx);
+      console.log(`✓ 比對報表已存到 ${compareOutFile}（${cmpXlsx.length} bytes）`);
+    }
+
+    // 不是本工具的報表 → 回傳 error（job = compare），不可讓 worker 卡住
+    const before = messages.length;
+    context.onmessage({ data: { type: "compare", old: { name: "bad.xlsx", data: new ArrayBuffer(8) },
+                                new: { name: "bad2.xlsx", data: new ArrayBuffer(8) } } });
+    const err = await new Promise((resolve) => {
+      const check = () => {
+        const hit = messages.slice(before).find((m) => m.type === "error" && m.job === "compare");
+        if (hit) resolve(hit); else waiters.push(check);
+      };
+      check();
+    });
+    messages.splice(before);                       // 預期中的錯誤，移除以免影響後續檢查
+    console.log(`✓ 錯誤檔案會回報：${err.text}`);
+  }
+  clearTimeout(timer);
   console.log("✓ 網頁版煙霧測試通過");
 }
 
