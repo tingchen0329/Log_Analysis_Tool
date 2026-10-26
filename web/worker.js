@@ -49,7 +49,7 @@ def run_compare(old_path, new_path, out_path):
     side = lambda d: {"name": d.name, "devices": len(d.devices), "aps": len(d.aps)}
     return json.dumps({
         "old": side(r.old), "new": side(r.new),
-        "counts": [[name, len(r.sheets[name])] for name in cla.COMPARE_SHEETS[1:]],
+        "counts": [[name, count] for name, count in r.counts().items()],
         "items": cla.compare_items(r),
         "lines": cla.compare_log_lines(r),
         "fileName": cla.default_compare_name(old_path, new_path),

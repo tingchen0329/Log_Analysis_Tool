@@ -23,10 +23,11 @@
 #
 # V23 變更摘要（新功能：維護設備比對）：
 #   1. 比對上季 / 本季兩份維護報表（本工具產出的 .xlsx），以 Serial Number 配對，輸出差異報表：
-#      摘要、新增設備、移除設備、換機與成員變更（Stack 成員 / HA 機箱 / AP 換機）、
-#      欄位異動（改名、Model、OOB IP、Firmware、HA Role、Fan / Power、System Log 新增告警）、
+#      第一頁「設備總表」= 本季完整設備 + AP（移除的設備列在最下方），以顏色標註
+#      （新增淡綠、移除淡紅、換機只標 SN 深紅、異動格子淺黃 + 註解上季值、需確認橘黃）；
+#      摘要（1～6 條列，以台數計）、新增設備、移除設備、換機與成員變更、欄位異動、
 #      新增 AP、移除 AP、需人工確認（無序號或序號重複）
-#   2. Stack / HA 非首列的「○」先補成首列的值再比對；同群組多台相同異動合併成一列
+#   2. Stack / HA 非首列的「○」先補成首列的值再比對；共用欄位（Hostname、OOB IP）只在首列比較
 #   3. GUI 新增「分析 Log / 維護設備比對」切換；CLI 新增 --compare 與 --compare-with
 #   4. Excel 寫入共用 write_workbook()（維護報表與比對報表格式一致）
 #
@@ -1811,13 +1812,14 @@ def _cell_width(value) -> int:
     return max(len(line.encode("big5", errors="ignore")) for line in str(value).split("\n"))
 
 
-def write_workbook(path: str, sheets: Dict[str, Sheet]):
-    """寫入 Excel 並套用格式：藍底白字表頭、微軟正黑體、細框線、自動欄寬（上限 100）。"""
+def write_workbook(path: str, sheets: Dict[str, Sheet],
+                   decorate: Optional[Callable[[str, object], None]] = None):
+    """寫入 Excel 並套用格式：藍底白字表頭、微軟正黑體、細框線、自動欄寬（上限 100）。
+    decorate(分頁名稱, worksheet)：格式套用完後的額外處理（比對報表的顏色標註）。"""
     header_fill = PatternFill("solid", fgColor="2F75B5")
     header_font = Font(name="微軟正黑體", size=12, bold=True, color="FFFFFF")
     data_font = Font(name="微軟正黑體", size=12)
     header_align = Alignment(horizontal="center")
-    wrap_align = Alignment(wrap_text=True, vertical="top")
     thin = Side(style="thin")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
@@ -1838,12 +1840,12 @@ def write_workbook(path: str, sheets: Dict[str, Sheet]):
                     cell.fill, cell.font, cell.alignment = header_fill, header_font, header_align
                 else:
                     cell.font = data_font
-                    if isinstance(cell.value, str) and "\n" in cell.value and name in COMPARE_SHEETS:
-                        cell.alignment = wrap_align      # 比對報表的多行說明自動換行
                     widths[c_idx] = max(widths[c_idx], _cell_width(cell.value))
                 cell.border = border
         for c_idx, w in enumerate(widths):
             ws.column_dimensions[get_column_letter(c_idx + 1)].width = min(int(w * 1.2) + 4, 100)
+        if decorate:
+            decorate(name, ws)
     wb.save(path)
 
 
@@ -1865,12 +1867,23 @@ def default_report_name() -> str:
 #   ② Stack / HA 非首列的「○」補成首列的值（○ (Stack) / ○ (HA) → 首列 Hostname）
 #   ③ 以 Serial Number 配對（序號在換機、改名、改 IP 後都不會變）；
 #      沒有序號時改用 Hostname + Model，並列入「需人工確認」
-#   ④ 分類：新增 / 移除 / 換機與成員變更 / 欄位異動 / 新增 AP / 移除 AP
+#   ④ 分類：新增 / 移除 / 換機 / 欄位異動 / 需人工確認
+# 輸出第一頁「設備總表」：本季全部設備 + AP，最下方列出本季已移除的設備，依顏色標註：
+#   淡綠整列 = 新增；淡紅整列（Hostname、SN 深紅）= 移除；深紅 SN = 換機；
+#   淺黃格子 = 欄位異動（註解為上季值）；橘黃 = 需人工確認
 # CPU / Memory 是收 Log 當下的數值，每季本來就不同，不列入異動。
 
 COMPARE_DEVICE_SHEETS = (("Switch Info", "Switch"), ("WLC Info", "WLC"), ("Fortigate Info", "FortiGate"))
 COMPARE_FIELDS = ("Model", "OOB IP", "Firmware Version", "HA Role", "Fan Status", "Power Status")
-COMPARE_SHEETS = ("摘要", "新增設備", "移除設備", "換機與成員變更", "欄位異動", "新增 AP", "移除 AP", "需人工確認")
+COMPARE_SHEETS = ("設備總表", "摘要", "新增設備", "移除設備", "換機與成員變更", "欄位異動",
+                  "新增 AP", "移除 AP", "需人工確認")
+DETAIL_SHEETS = COMPARE_SHEETS[2:]
+MASTER_COLS = ["狀態", "類型", "Hostname", "Model", "OOB IP", "Ethernet MAC", "Serial Number",
+               "Firmware Version", "HA Role", "CPU Usage", "Memory Usage", "Fan Status", "Power Status",
+               "System Log", "Source File", "變更說明"]
+AP_TO_MASTER = {"Hostname": "AP Name", "Model": "AP Model", "OOB IP": "IP Address", "Ethernet MAC": "Ethernet MAC",
+                "Serial Number": "AP Serial Number", "Firmware Version": "Software Version",
+                "Source File": "Source File"}
 DEVICE_LIST_COLS = ["類型", "Hostname", "位置", "Model", "OOB IP", "Serial Number",
                     "Firmware Version", "Source File"]
 REPLACE_COLS = ["類型", "Hostname", "位置", "判定", "上季 Model", "上季 Serial", "本季 Model",
@@ -1884,6 +1897,15 @@ SYSLOG_STAMP_RE = re.compile(
     r"(?:\d{1,2}:\d{2}:\d{2}(?:\.\d+)?)?\s*(?:[A-Z]{2,5}\s*)?:?\s*")
 ALERT_SHOW = 5                                   # 欄位異動中每台最多列出幾筆新增告警
 
+# 顏色沿用 KINSUS 維護報告 VBA 對帳巨集：淺黃 = 異動、淡紅 = 序號異動 / 遺失
+FILL_ADD = "C6EFCE"                              # 新增：整列淡綠
+FILL_REMOVED = "FFC7CE"                          # 移除：整列淡紅
+FILL_RED = "FF9999"                              # 換機只標 SN；移除的 Hostname / SN
+FILL_CHANGED = "FFFF99"                          # 欄位異動的格子（RGB 255,255,153）
+FILL_REVIEW = "FFE699"                           # 需人工確認
+STATUS_ORDER = ("新增", "移除", "換機", "異動", "需確認", "")
+STATUS_PRIORITY = {"": 0, "異動": 1, "需確認": 2, "換機": 3, "新增": 4, "移除": 5}
+
 
 class CompareError(ValueError):
     """輸入檔不是本工具產出的維護報表。"""
@@ -1894,8 +1916,11 @@ class ReportDevice:
     kind: str                        # Switch / WLC / FortiGate
     host: str                        # 已補齊的 Hostname（群組成員 = 首列 Hostname）
     pos: str                         # 群組內位置：成員 N（Stack）/ 機箱 N（HA）；單機為空
-    values: Dict[str, str]
+    values: Dict[str, str]           # 「○」已補成首列的值
     serial: str                      # 正規化序號；無效時為空字串
+    raw: Dict[str, str]              # 報表原始內容（設備總表照原樣顯示「○」）
+    group: int = 0
+    idx: int = 0                     # 群組內第幾台（0 = 首列）
 
     def key(self) -> Tuple:
         return ("SN", self.serial) if self.serial else ("HM", self.kind, self.host.upper(),
@@ -1913,13 +1938,69 @@ class ReportData:
 
 
 @dataclass
+class Mark:
+    """設備總表中一列的標註：狀態、整列底色、單格底色、註解、變更說明。"""
+    status: str = ""
+    row_fill: str = ""
+    cells: Dict[str, str] = field(default_factory=dict)
+    comments: Dict[str, str] = field(default_factory=dict)
+    notes: List[str] = field(default_factory=list)
+
+    def set_status(self, status: str):
+        if STATUS_PRIORITY[status] > STATUS_PRIORITY[self.status]:
+            self.status = status
+
+    def change(self, col: str, old: str, new: str, note: str):
+        self.set_status("異動")
+        self.cells.setdefault(col, FILL_CHANGED)
+        self.comments[col] = f"上季：{old or '（空白）'}"
+        self.notes.append(note)
+
+
+@dataclass
+class MasterRow:
+    values: Dict[str, str]
+    mark: Mark
+    label: str                       # GUI / 網頁版顯示用名稱（Stack 成員顯示真實 Hostname + 位置）
+    is_ap: bool = False
+    from_old: bool = False           # 上季資料（本季已移除，或上季無序號無法判斷）
+
+
+@dataclass
 class CompareResult:
     old: ReportData
     new: ReportData
-    sheets: Dict[str, List[Dict[str, str]]]      # 分頁名稱 → 資料列（摘要除外）
+    sheets: Dict[str, List[Dict[str, str]]]      # 明細分頁名稱 → 資料列
+    master: List[MasterRow] = field(default_factory=list)
+
+    def changed_units(self) -> int:
+        return sum(1 for r in self.master if FILL_CHANGED in r.mark.cells.values())
 
     def counts(self) -> Dict[str, int]:
-        return {name: len(rows) for name, rows in self.sheets.items()}
+        """各明細分頁的數量；欄位異動以「台數」計（同一台多個欄位只算一台）。"""
+        c = {name: len(rows) for name, rows in self.sheets.items()}
+        c["欄位異動"] = self.changed_units()
+        return c
+
+    def device_stats(self) -> Dict[str, int]:
+        devs = [r for r in self.master if not r.is_ap]
+        live = [r for r in devs if not r.from_old]
+        return {
+            "相符": sum(1 for r in live if r.mark.status == ""),
+            "換機": sum(1 for r in live if r.mark.status == "換機"),
+            "移除": sum(1 for r in devs if r.mark.status == "移除"),
+            "新增": sum(1 for r in live if r.mark.status == "新增"),
+            "異動": sum(1 for r in devs if FILL_CHANGED in r.mark.cells.values()),
+        }
+
+    def ap_stats(self) -> Dict[str, int]:
+        aps = [r for r in self.master if r.is_ap]
+        return {
+            "新增": sum(1 for r in aps if r.mark.status == "新增"),
+            "移除": sum(1 for r in aps if r.mark.status == "移除"),
+            "換機": sum(1 for r in aps if r.mark.status == "換機"),
+            "改名": sum(1 for r in aps if "Hostname" in r.mark.comments),
+        }
 
 
 def _norm_serial(value) -> str:
@@ -1951,6 +2032,7 @@ def load_report(path: str) -> ReportData:
             return [dict(zip(header, map(_cell_text, row))) for row in it if any(c is not None for c in row)]
 
         devices: List[ReportDevice] = []
+        group_no = 0
         for sheet, kind in COMPARE_DEVICE_SHEETS:
             rows = rows_of(sheet)
             if rows and ("Hostname" not in rows[0] or "Serial Number" not in rows[0]):
@@ -1962,6 +2044,7 @@ def load_report(path: str) -> ReportData:
                 else:
                     groups.append([r])
             for members in groups:
+                group_no += 1
                 head = members[0]
                 is_ha = len(members) > 1 and members[1].get("Hostname", "").endswith("(HA)")
                 for i, r in enumerate(members):
@@ -1969,7 +2052,7 @@ def load_report(path: str) -> ReportData:
                     values["Hostname"] = head.get("Hostname", "")
                     pos = (f"機箱 {i + 1}" if is_ha else f"成員 {i + 1}") if len(members) > 1 else ""
                     devices.append(ReportDevice(kind, values["Hostname"], pos, values,
-                                                _norm_serial(values.get("Serial Number"))))
+                                                _norm_serial(values.get("Serial Number")), r, group_no, i))
         aps = [r for r in rows_of("AP Info") if r.get("AP Name") or r.get("AP Serial Number")]
         return ReportData(name, devices, aps)
     finally:
@@ -1993,43 +2076,75 @@ def _device_row(d: ReportDevice) -> Dict[str, str]:
             ("Model", "OOB IP", "Serial Number", "Firmware Version", "Source File")}}
 
 
-def _index(items, key_fn, report: str, review: List[Dict[str, str]], describe) -> Dict[Tuple, object]:
-    """以 key_fn 建索引；重複的鍵只保留第一筆，其餘列入「需人工確認」。"""
+def _index(items, key_fn) -> Tuple[Dict[Tuple, object], List[object]]:
+    """以 key_fn 建索引；重複的鍵只保留第一筆，其餘回傳給呼叫端列入「需人工確認」。"""
     idx: Dict[Tuple, object] = {}
+    dups: List[object] = []
     for it in items:
         k = key_fn(it)
         if k in idx:
-            why = "序號重複" if k[0] == "SN" else "無序號且名稱 / 型號重複"
-            review.append({**describe(it), "季別": report, "原因": f"{why}，只比對第一筆"})
+            dups.append(it)
         else:
             idx[k] = it
-    return idx
+    return idx, dups
 
 
-def _diff_devices(old: ReportData, new: ReportData, sheets: Dict[str, List[Dict[str, str]]]):
+def _dup_reason(key: Tuple) -> str:
+    return ("序號重複" if key[0] == "SN" else "無序號且名稱 / 型號重複") + "，只比對第一筆"
+
+
+def _diff_devices(old: ReportData, new: ReportData, sheets: Dict[str, List[Dict[str, str]]]
+                  ) -> Tuple[Dict[int, Mark], List[Tuple[ReportDevice, Mark]]]:
+    """回傳（本季設備的標註 {id(device): Mark}, 本季已移除的上季設備與標註）。"""
     review = sheets["需人工確認"]
+    marks: Dict[int, Mark] = {}
+    removed: List[Tuple[ReportDevice, Mark]] = []
+    mk = lambda d: marks.setdefault(id(d), Mark())
     describe = lambda d: {"類型": d.kind, "Hostname": d.label(), "Model": d.values.get("Model", ""),
                           "Serial Number": d.values.get("Serial Number", "")}
-    o_idx = _index(old.devices, ReportDevice.key, "上季", review, describe)
-    n_idx = _index(new.devices, ReportDevice.key, "本季", review, describe)
 
-    # ── 配對成功：逐欄比較 ─────────────────────────────────────────────────
+    def gone(d: ReportDevice, note: str, status: str = "移除"):
+        m = Mark(status=status, row_fill=FILL_REMOVED if status == "移除" else "",
+                 cells={"Hostname": FILL_RED, "Serial Number": FILL_RED} if status == "移除"
+                 else {"狀態": FILL_REVIEW, "Serial Number": FILL_REVIEW}, notes=[note])
+        removed.append((d, m))
+
+    def needs_review(d: ReportDevice, note: str):
+        m = mk(d)
+        m.set_status("需確認")
+        m.cells["Serial Number"] = FILL_REVIEW
+        m.notes.append(note)
+
+    o_idx, o_dups = _index(old.devices, ReportDevice.key)
+    n_idx, n_dups = _index(new.devices, ReportDevice.key)
+    for d in o_dups:
+        review.append({**describe(d), "季別": "上季", "原因": _dup_reason(d.key())})
+    for d in n_dups:
+        review.append({**describe(d), "季別": "本季", "原因": _dup_reason(d.key())})
+        needs_review(d, _dup_reason(d.key()))
+
+    # ── 配對成功：逐欄比較（群組成員顯示為「○」的共用欄位只在首列比較）───────────
     changes: List[Dict[str, str]] = []
     group_sizes = Counter((d.kind, d.host) for d in new.devices)
     for k, nd in n_idx.items():
         od = o_idx.get(k)
         if od is None:
             continue
+        m = mk(nd)
         if k[0] == "HM":
             review.append({**describe(nd), "季別": "兩季", "原因": "無序號，以 Hostname + Model 配對，請確認是否為同一台"})
+            needs_review(nd, "無序號，以 Hostname + Model 配對")
         base = {"類型": nd.kind, "Hostname": nd.host, "位置": nd.pos,
                 "Serial Number": nd.values.get("Serial Number", "")}
-        if od.host != nd.host:
+        shared = lambda col: nd.raw.get(col, "").startswith(MARK)
+        if od.host != nd.host and not shared("Hostname"):
             changes.append({**base, "欄位": "Hostname（改名）", "上季": od.host, "本季": nd.host})
+            m.change("Hostname", od.host, nd.host, f"改名：{od.host} → {nd.host}")
         for col in COMPARE_FIELDS:
             a, b = od.values.get(col, ""), nd.values.get(col, "")
-            if col in nd.values and col in od.values and a != b:
+            if col in nd.values and col in od.values and a != b and not shared(col):
                 changes.append({**base, "欄位": col, "上季": a, "本季": b})
+                m.change(col, a, b, f"{col}：{a or '—'} → {b or '—'}")
         old_alerts = _alert_lines(od.values.get("System Log", ""))
         new_alerts = [v for key, v in _alert_lines(nd.values.get("System Log", "")).items()
                       if key not in old_alerts]
@@ -2038,8 +2153,10 @@ def _diff_devices(old: ReportData, new: ReportData, sheets: Dict[str, List[Dict[
             more = f"\n…另 {len(new_alerts) - ALERT_SHOW} 筆" if len(new_alerts) > ALERT_SHOW else ""
             changes.append({**base, "欄位": "System Log（新增告警）", "上季": "",
                             "本季": "\n".join(shown) + more})
+            m.change("System Log", "", "", f"System Log 新增告警 {len(new_alerts)} 筆")
+            m.comments["System Log"] = "新增告警：\n" + "\n".join(shown) + more
 
-    # 同一群組多台成員有相同異動（例如 Stack 一起升級韌體）→ 合併成一列
+    # 同一群組多台成員有相同異動（例如 Stack 一起升級韌體）→ 欄位異動分頁合併成一列
     merged: Dict[Tuple, List[Dict[str, str]]] = {}
     for c in changes:
         merged.setdefault((c["類型"], c["Hostname"], c["欄位"], c["上季"], c["本季"]), []).append(c)
@@ -2053,45 +2170,75 @@ def _diff_devices(old: ReportData, new: ReportData, sheets: Dict[str, List[Dict[
     # ── 未配對：同 Hostname → 換機 / 成員增減；其餘 → 新增 / 移除 ──────────────
     o_left = [d for k, d in o_idx.items() if k not in n_idx]
     n_left = [d for k, d in n_idx.items() if k not in o_idx]
-    for d in o_left + n_left:
+    for d in o_left:
         if not d.serial:
-            in_new = d in n_left
-            review.append({**describe(d), "季別": "本季" if in_new else "上季",
-                           "原因": f"無序號且找不到{'上季' if in_new else '本季'}的同名同型號設備，"
-                                   f"無法判斷是否為{'新增' if in_new else '移除'}"})
+            review.append({**describe(d), "季別": "上季",
+                           "原因": "無序號且找不到本季的同名同型號設備，無法判斷是否為移除"})
+            gone(d, "上季資料：無序號，無法判斷是否移除", status="需確認")
+    for d in n_left:
+        if not d.serial:
+            review.append({**describe(d), "季別": "本季",
+                           "原因": "無序號且找不到上季的同名同型號設備，無法判斷是否為新增"})
+            needs_review(d, "無序號，無法判斷是否為新增")
     o_left = [d for d in o_left if d.serial]
     n_left = [d for d in n_left if d.serial]
     old_hosts = {(d.kind, d.host.upper()) for d in old.devices}
     new_hosts = {(d.kind, d.host.upper()) for d in new.devices}
+
+    def added(d: ReportDevice, note: str):
+        sheets["新增設備"].append(_device_row(d))
+        m = mk(d)
+        m.set_status("新增")
+        m.row_fill = FILL_ADD
+        m.notes.append(note)
+
+    def removed_dev(d: ReportDevice, note: str):
+        sheets["移除設備"].append(_device_row(d))
+        gone(d, note)
+
     for kind_host in sorted({(d.kind, d.host.upper()) for d in n_left} | {(d.kind, d.host.upper()) for d in o_left}):
-        gone = [d for d in o_left if (d.kind, d.host.upper()) == kind_host]
+        out = [d for d in o_left if (d.kind, d.host.upper()) == kind_host]
         came = [d for d in n_left if (d.kind, d.host.upper()) == kind_host]
         if kind_host not in old_hosts:              # 上季沒有這個 Hostname → 全新設備
-            sheets["新增設備"].extend(_device_row(d) for d in came)
+            for d in came:
+                added(d, f"新上線設備（{d.pos}）" if d.pos else "新上線設備")
             continue
         if kind_host not in new_hosts:              # 本季沒有這個 Hostname → 整組下線
-            sheets["移除設備"].extend(_device_row(d) for d in gone)
+            for d in out:
+                removed_dev(d, f"本季找不到（上季資料，{d.pos}）" if d.pos else "本季找不到（上季資料）")
             continue
         group = len([d for d in new.devices if (d.kind, d.host.upper()) == kind_host]) > 1 or \
             len([d for d in old.devices if (d.kind, d.host.upper()) == kind_host]) > 1
-        gone_by_pos = {d.pos: d for d in gone}
+        out_by_pos = {d.pos: d for d in out}
         pairs: List[Tuple[Optional[ReportDevice], Optional[ReportDevice]]] = []
         for d in came:                              # 同位置優先配對，其次依序配對
-            o = gone_by_pos.pop(d.pos, None) if d.pos in gone_by_pos else None
-            pairs.append((o, d))
-        rest = list(gone_by_pos.values())
+            pairs.append((out_by_pos.pop(d.pos, None), d))
+        rest = list(out_by_pos.values())
         pairs = [(o or (rest.pop(0) if rest else None), n) for o, n in pairs] + [(o, None) for o in rest]
         for o, n in pairs:
-            ref = n or o
-            unit = "機箱" if ref.pos.startswith("機箱") else "成員"
-            verdict = (f"{unit}換新" if group else "換機") if o and n else (f"{unit}新增" if n else f"{unit}移除")
-            sheets["換機與成員變更"].append({
-                "類型": ref.kind, "Hostname": ref.host, "位置": ref.pos, "判定": verdict,
-                "上季 Model": o.values.get("Model", "") if o else "",
-                "上季 Serial": o.values.get("Serial Number", "") if o else "",
-                "本季 Model": n.values.get("Model", "") if n else "",
-                "本季 Serial": n.values.get("Serial Number", "") if n else "",
-                "本季 Source File": n.values.get("Source File", "") if n else ""})
+            unit = "機箱" if (n or o).pos.startswith("機箱") else "成員"
+            if o and n:
+                verdict = f"{unit}換新" if group else "換機"
+                o_sn, n_sn = o.values.get("Serial Number", ""), n.values.get("Serial Number", "")
+                sheets["換機與成員變更"].append({
+                    "類型": n.kind, "Hostname": n.host, "位置": n.pos, "判定": verdict,
+                    "上季 Model": o.values.get("Model", ""), "上季 Serial": o_sn,
+                    "本季 Model": n.values.get("Model", ""), "本季 Serial": n_sn,
+                    "本季 Source File": n.values.get("Source File", "")})
+                m = mk(n)
+                m.set_status("換機")
+                m.cells["Serial Number"] = FILL_RED
+                m.comments["Serial Number"] = f"上季：{o_sn}"
+                m.notes.append(f"{n.pos} {verdict[-2:]}：{o_sn} → {n_sn}" if group else f"換機：{o_sn} → {n_sn}")
+                if o.values.get("Model", "") != n.values.get("Model", ""):
+                    m.change("Model", o.values.get("Model", ""), n.values.get("Model", ""),
+                             f"Model：{o.values.get('Model', '')} → {n.values.get('Model', '')}")
+                    m.status = "換機"
+            elif n:
+                added(n, f"{n.pos} 新增" if n.pos else "新上線設備")
+            else:
+                removed_dev(o, f"{o.pos} 移除（上季資料）" if o.pos else "本季找不到（上季資料）")
+    return marks, removed
 
 
 def _ap_key(ap: Dict[str, str]) -> Tuple:
@@ -2102,12 +2249,23 @@ def _ap_key(ap: Dict[str, str]) -> Tuple:
     return ("MAC", mac) if mac else ("NAME", ap.get("AP Name", "").upper())
 
 
-def _diff_aps(old: ReportData, new: ReportData, sheets: Dict[str, List[Dict[str, str]]]):
+def _diff_aps(old: ReportData, new: ReportData, sheets: Dict[str, List[Dict[str, str]]]
+              ) -> Tuple[Dict[int, Mark], List[Tuple[Dict[str, str], Mark]]]:
     review = sheets["需人工確認"]
+    marks: Dict[int, Mark] = {}
+    mk = lambda a: marks.setdefault(id(a), Mark())
     describe = lambda a: {"類型": "AP", "Hostname": a.get("AP Name", ""), "Model": a.get("AP Model", ""),
                           "Serial Number": a.get("AP Serial Number", "")}
-    o_idx = _index(old.aps, _ap_key, "上季", review, describe)
-    n_idx = _index(new.aps, _ap_key, "本季", review, describe)
+    o_idx, o_dups = _index(old.aps, _ap_key)
+    n_idx, n_dups = _index(new.aps, _ap_key)
+    for a in o_dups:
+        review.append({**describe(a), "季別": "上季", "原因": _dup_reason(_ap_key(a))})
+    for a in n_dups:
+        review.append({**describe(a), "季別": "本季", "原因": _dup_reason(_ap_key(a))})
+        m = mk(a)
+        m.set_status("需確認")
+        m.cells["Serial Number"] = FILL_REVIEW
+        m.notes.append(_dup_reason(_ap_key(a)))
     pick = lambda a: {c: a.get(c, "") for c in AP_COLS}
     for k, a in n_idx.items():
         o = o_idx.get(k)
@@ -2116,6 +2274,8 @@ def _diff_aps(old: ReportData, new: ReportData, sheets: Dict[str, List[Dict[str,
                                     "Serial Number": a.get("AP Serial Number", ""),
                                     "欄位": "AP Name（改名）", "上季": o.get("AP Name", ""),
                                     "本季": a.get("AP Name", "")})
+            mk(a).change("Hostname", o.get("AP Name", ""), a.get("AP Name", ""),
+                         f"改名：{o.get('AP Name', '')} → {a.get('AP Name', '')}")
     gone = {k: a for k, a in o_idx.items() if k not in n_idx}
     came = {k: a for k, a in n_idx.items() if k not in o_idx}
     gone_by_name = {a.get("AP Name", "").upper(): k for k, a in gone.items() if a.get("AP Name")}
@@ -2125,66 +2285,201 @@ def _diff_aps(old: ReportData, new: ReportData, sheets: Dict[str, List[Dict[str,
             continue
         o = gone.pop(ok)
         del came[k]
+        o_sn, n_sn = o.get("AP Serial Number", ""), a.get("AP Serial Number", "")
         sheets["換機與成員變更"].append({
             "類型": "AP", "Hostname": a.get("AP Name", ""), "位置": "", "判定": "AP 換機",
-            "上季 Model": o.get("AP Model", ""), "上季 Serial": o.get("AP Serial Number", ""),
-            "本季 Model": a.get("AP Model", ""), "本季 Serial": a.get("AP Serial Number", ""),
+            "上季 Model": o.get("AP Model", ""), "上季 Serial": o_sn,
+            "本季 Model": a.get("AP Model", ""), "本季 Serial": n_sn,
             "本季 Source File": a.get("Source File", "")})
-    sheets["新增 AP"].extend(pick(a) for a in came.values())
-    sheets["移除 AP"].extend(pick(a) for a in gone.values())
+        m = mk(a)
+        m.set_status("換機")
+        m.cells["Serial Number"] = FILL_RED
+        m.comments["Serial Number"] = f"上季：{o_sn}"
+        m.notes.append(f"AP 換機：{o_sn} → {n_sn}")
+    for a in came.values():
+        sheets["新增 AP"].append(pick(a))
+        m = mk(a)
+        m.set_status("新增")
+        m.row_fill = FILL_ADD
+        m.notes.append("新上線 AP")
+    removed = []
+    for a in gone.values():
+        sheets["移除 AP"].append(pick(a))
+        removed.append((a, Mark(status="移除", row_fill=FILL_REMOVED,
+                                cells={"Hostname": FILL_RED, "Serial Number": FILL_RED},
+                                notes=["本季找不到（上季資料）"])))
+    return marks, removed
+
+
+def _master_device(d: ReportDevice, m: Mark, from_old: bool = False) -> MasterRow:
+    """本季設備照報表原樣（含「○」）；上季資料列已脫離群組，顯示補齊後的 Hostname / IP。"""
+    src = {**d.values, "Hostname": d.host} if from_old else d.raw
+    values = {c: src.get(c, "") for c in MASTER_COLS}
+    values.update({"狀態": m.status, "類型": d.kind, "變更說明": "；".join(m.notes)})
+    return MasterRow(values, m, d.label() + ("（上季）" if from_old and m.status != "移除" else ""),
+                     from_old=from_old)
+
+
+def _master_ap(a: Dict[str, str], m: Mark, from_old: bool = False) -> MasterRow:
+    values = {c: a.get(AP_TO_MASTER[c], "") if c in AP_TO_MASTER else "" for c in MASTER_COLS}
+    values.update({"狀態": m.status, "類型": "AP", "變更說明": "；".join(m.notes)})
+    return MasterRow(values, m, a.get("AP Name", ""), is_ap=True, from_old=from_old)
 
 
 def compare_reports(old_path: str, new_path: str) -> CompareResult:
-    """上季 / 本季維護報表比對；兩份路徑相同或內容無法讀取時丟出 CompareError。"""
+    """上季 / 本季維護報表比對；不是本工具產出的報表或無法讀取時丟出 CompareError。"""
     old, new = load_report(old_path), load_report(new_path)
-    sheets: Dict[str, List[Dict[str, str]]] = {name: [] for name in COMPARE_SHEETS[1:]}
-    _diff_devices(old, new, sheets)
-    _diff_aps(old, new, sheets)
-    return CompareResult(old, new, sheets)
+    sheets: Dict[str, List[Dict[str, str]]] = {name: [] for name in DETAIL_SHEETS}
+    dev_marks, dev_removed = _diff_devices(old, new, sheets)
+    ap_marks, ap_removed = _diff_aps(old, new, sheets)
+
+    # 設備總表：本季設備依群組首列 OOB IP 排序（同維護報表），接著 AP，最下方為本季已移除
+    heads = {d.group: d for d in new.devices if d.idx == 0}
+    devices = sorted(new.devices, key=lambda d: (ip_sort_key(heads[d.group].raw.get("OOB IP", "")),
+                                                 d.group, d.idx))
+    master = [_master_device(d, dev_marks.get(id(d), Mark())) for d in devices]
+    master += [_master_ap(a, ap_marks.get(id(a), Mark())) for a in new.aps]
+    master += [_master_device(d, m, from_old=True) for d, m in dev_removed]
+    master += [_master_ap(a, m, from_old=True) for a, m in ap_removed]
+    return CompareResult(old, new, sheets, master)
+
+
+def _summary_rows(result: CompareResult) -> List[List[str]]:
+    d, a = result.device_stats(), result.ap_stats()
+    items = len(result.sheets["欄位異動"])
+    side = lambda r: f"{r.name}（{len(r.devices)} 台設備、{len(r.aps)} 支 AP）"
+    return [
+        ["比對來源", "", ""],
+        ["上季報表", side(result.old), ""],
+        ["本季報表", side(result.new), ""],
+        ["【設備盤點對帳結果】", "", ""],
+        ["1. 序號完全相符（無變更）", f"{d['相符']} 台", "無底色"],
+        ["2. 換機 / 成員換新（序號異動）", f"{d['換機']} 台", "只標 Serial Number（深紅）"],
+        ["3. 移除設備（本季找不到）", f"{d['移除']} 台", "整列淡紅，Hostname 與 Serial Number 深紅"],
+        ["4. 新增設備 / Stack 新成員", f"{d['新增']} 台", "整列淡綠"],
+        ["5. 欄位異動（以台數計）", f"{d['異動']} 台", "只標有變的格子（淺黃），註解為上季值"],
+        ["6. 需人工確認（無序號 / 序號重複）", f"{len(result.sheets['需人工確認'])} 筆", "狀態與 Serial Number 橘黃"],
+        ["【AP】", "", ""],
+        ["新增 AP", f"{a['新增']} 支", "整列淡綠"],
+        ["移除 AP", f"{a['移除']} 支", "整列淡紅"],
+        ["AP 換機", f"{a['換機']} 支", "只標 Serial Number（深紅）"],
+        ["AP 改名", f"{a['改名']} 支", "只標 Hostname（淺黃）"],
+        ["說明", "", ""],
+        ["配對方式", "以 Serial Number 配對；CPU / Memory 為收 Log 當下的數值，不列入異動", ""],
+        ["欄位異動明細", f"{items} 項（見「欄位異動」分頁）", ""],
+        ["比對時間", f"{datetime.now():%Y-%m-%d %H:%M}", ""],
+        ["版本", f"Network Analysis Tool {APP_VERSION}", ""],
+    ]
+
+
+SUMMARY_FILLS = {"2.": FILL_RED, "3.": FILL_REMOVED, "4.": FILL_ADD, "5.": FILL_CHANGED, "6.": FILL_REVIEW,
+                 "新增 AP": FILL_ADD, "移除 AP": FILL_REMOVED, "AP 換機": FILL_RED, "AP 改名": FILL_CHANGED}
+SUMMARY_SECTIONS = ("比對來源", "【設備盤點對帳結果】", "【AP】", "說明")
+DETAIL_FILLS = {"新增設備": (FILL_ADD, None), "新增 AP": (FILL_ADD, None),
+                "移除設備": (FILL_REMOVED, None), "移除 AP": (FILL_REMOVED, None),
+                "換機與成員變更": (None, ("上季 Serial", "本季 Serial")),
+                "欄位異動": (None, ("本季",)), "需人工確認": (None, ("原因",))}
+WRAP_COLS = ("變更說明", "本季", "原因", "內容")
 
 
 def build_compare_sheets(result: CompareResult) -> Dict[str, Sheet]:
     """比對報表分頁；沒有差異的分頁仍建立，內容寫「無」，代表已檢查過。"""
-    c = result.counts()
-    summary = [
-        ["上季報表", result.old.name], ["本季報表", result.new.name],
-        ["上季設備數", len(result.old.devices)], ["本季設備數", len(result.new.devices)],
-        ["上季 AP 數", len(result.old.aps)], ["本季 AP 數", len(result.new.aps)],
-        *[[name, c[name]] for name in COMPARE_SHEETS[1:]],
-        ["比對時間", f"{datetime.now():%Y-%m-%d %H:%M}"],
-        ["說明", "以 Serial Number 配對；CPU / Memory 為收 Log 當下的數值，不列入異動"],
-        ["版本", f"Network Analysis Tool {APP_VERSION}"],
-    ]
     col_map = {"新增設備": DEVICE_LIST_COLS, "移除設備": DEVICE_LIST_COLS, "換機與成員變更": REPLACE_COLS,
                "欄位異動": CHANGE_COLS, "新增 AP": AP_COLS, "移除 AP": AP_COLS, "需人工確認": REVIEW_COLS}
-    sheets: Dict[str, Sheet] = {"摘要": (["項目", "內容"], summary)}
+    sheets: Dict[str, Sheet] = {
+        "設備總表": _table([r.values for r in result.master], MASTER_COLS),
+        "摘要": (["項目", "數量", "設備總表標註方式"], _summary_rows(result)),
+    }
     for name, cols in col_map.items():
         rows = result.sheets[name]
         sheets[name] = _table(rows, cols) if rows else (cols, [["無"] + [""] * (len(cols) - 1)])
     return sheets
 
 
+def _decorate_compare(result: CompareResult):
+    """write_workbook 的後製：設備總表上色 / 註解 / 圖例 / 篩選，摘要與明細分頁上色。"""
+    from openpyxl.comments import Comment
+    fill = lambda hex_: PatternFill("solid", fgColor=hex_)
+    bold = Font(name="微軟正黑體", size=12, bold=True)
+    wrap = Alignment(wrap_text=True, vertical="top")
+
+    def wrap_cells(ws, header_row: int):
+        cols = [c.column for c in ws[header_row] if c.value in WRAP_COLS]
+        for row in ws.iter_rows(min_row=header_row + 1):
+            for c in row:
+                if c.column in cols and isinstance(c.value, str) and "\n" in c.value:
+                    c.alignment = wrap
+
+    def decorate(name: str, ws):
+        if name == "設備總表":
+            ws.insert_rows(1, 2)                         # 第 1 列標題、第 2 列圖例，表頭在第 3 列
+            ws["A1"] = f"設備總表（本季：{result.new.name} ／ 上季：{result.old.name}）"
+            ws["A1"].font = Font(name="微軟正黑體", size=14, bold=True)
+            legend = [("圖例", None), ("新增", FILL_ADD), ("移除", FILL_REMOVED), ("換機（SN）", FILL_RED),
+                      ("異動欄位", FILL_CHANGED), ("需人工確認", FILL_REVIEW), ("紅色三角 = 註解（上季值）", None)]
+            for i, (text, color) in enumerate(legend, 1):
+                c = ws.cell(row=2, column=i, value=text)
+                c.font = Font(name="微軟正黑體", size=11, bold=color is None and i == 1)
+                c.alignment = Alignment(horizontal="center" if color else "left")
+                if color:
+                    c.fill = fill(color)
+            col_no = {name: i + 1 for i, name in enumerate(MASTER_COLS)}
+            for r_idx, row in enumerate(result.master, 4):
+                m = row.mark
+                if m.row_fill:
+                    for c_idx in range(1, len(MASTER_COLS) + 1):
+                        ws.cell(row=r_idx, column=c_idx).fill = fill(m.row_fill)
+                if m.status:
+                    ws.cell(row=r_idx, column=1).font = Font(name="微軟正黑體", size=12, bold=True)
+                if m.status == "需確認":
+                    ws.cell(row=r_idx, column=1).fill = fill(FILL_REVIEW)
+                for col, color in m.cells.items():
+                    ws.cell(row=r_idx, column=col_no[col]).fill = fill(color)
+                for col, text in m.comments.items():
+                    cm = Comment(text, "Network Analysis Tool")
+                    cm.width, cm.height = 260, 60 + 15 * text.count("\n")
+                    ws.cell(row=r_idx, column=col_no[col]).comment = cm
+            last = get_column_letter(len(MASTER_COLS))
+            ws.auto_filter.ref = f"A3:{last}{max(3, len(result.master) + 3)}"
+            ws.freeze_panes = "D4"
+            ws.column_dimensions[get_column_letter(col_no["System Log"])].width = 60
+            ws.column_dimensions[get_column_letter(col_no["變更說明"])].width = 50
+            wrap_cells(ws, 3)
+        elif name == "摘要":
+            for row in ws.iter_rows(min_row=2):
+                label = str(row[0].value or "")
+                if label in SUMMARY_SECTIONS:
+                    for c in row:
+                        c.font, c.fill = bold, fill("F1EFE8")
+                for key, color in SUMMARY_FILLS.items():
+                    if label.startswith(key):
+                        row[2].fill = fill(color)
+        elif name in DETAIL_FILLS and result.sheets.get(name):
+            row_color, cols = DETAIL_FILLS[name]
+            header = [c.value for c in ws[1]]
+            targets = [header.index(c) + 1 for c in (cols or ()) if c in header]
+            cell_color = {"換機與成員變更": FILL_RED, "欄位異動": FILL_CHANGED, "需人工確認": FILL_REVIEW}.get(name)
+            for row in ws.iter_rows(min_row=2):
+                for c in row:
+                    if row_color:
+                        c.fill = fill(row_color)
+                    elif c.column in targets and c.value:
+                        c.fill = fill(cell_color)
+            ws.freeze_panes = "A2"
+            wrap_cells(ws, 1)
+    return decorate
+
+
 def write_compare_excel(path: str, result: CompareResult):
-    write_workbook(path, build_compare_sheets(result))
+    write_workbook(path, build_compare_sheets(result), decorate=_decorate_compare(result))
 
 
 def compare_items(result: CompareResult) -> List[Tuple[str, str, str]]:
-    """每筆差異一行（類別, 名稱, 說明），GUI / CLI 記錄與網頁版預覽共用。"""
-    s, items = result.sheets, []
-    model_ip = lambda d, last: "｜".join(v for v in (d["Model"], d[last]) if v)
-    name = lambda d: f"{d['Hostname']} {d['位置']}".strip()
-    items += [("新增設備", name(d), model_ip(d, "OOB IP")) for d in s["新增設備"]]
-    items += [("移除設備", name(d), model_ip(d, "Serial Number")) for d in s["移除設備"]]
-    items += [(d["判定"], name(d), f"{d['上季 Serial'] or '—'} → {d['本季 Serial'] or '—'}")
-              for d in s["換機與成員變更"]]
-    for d in s["欄位異動"]:
-        new_val = d["本季"].split("\n")[0] + (" …" if "\n" in d["本季"] else "")
-        items.append(("欄位異動", name(d), f"{d['欄位']}：{d['上季'] or '—'} → {new_val}"))
-    items += [("新增 AP", a["AP Name"], model_ip({"Model": a["AP Model"], "IP": a["IP Address"]}, "IP"))
-              for a in s["新增 AP"]]
-    items += [("移除 AP", a["AP Name"], a["AP Serial Number"]) for a in s["移除 AP"]]
-    items += [("需人工確認", d["Hostname"], f"（{d['季別']}）{d['原因']}") for d in s["需人工確認"]]
-    return items
+    """每台有變化的設備 / AP 一行（狀態, 名稱, 變更說明），依新增 → 移除 → 換機 → 異動 → 需確認排序；
+    GUI / CLI 記錄與網頁版預覽共用。"""
+    rows = [r for r in result.master if r.mark.status]
+    rows.sort(key=lambda r: STATUS_ORDER.index(r.mark.status))
+    return [(("AP " if r.is_ap else "") + r.mark.status, r.label, r.values["變更說明"]) for r in rows]
 
 
 def compare_log_lines(result: CompareResult) -> List[str]:
@@ -2193,7 +2488,8 @@ def compare_log_lines(result: CompareResult) -> List[str]:
              f"[比對] 本季：{result.new.name}（{len(result.new.devices)} 台設備、{len(result.new.aps)} 支 AP）"]
     lines += [f"[{cat}] {name}｜{desc}" if desc else f"[{cat}] {name}" for cat, name, desc in compare_items(result)]
     c = result.counts()
-    lines.append("｜".join(f"{name} {c[name]}" for name in COMPARE_SHEETS[1:]))
+    unit = lambda name: "支" if "AP" in name else "筆" if name == "需人工確認" else "台"
+    lines.append("｜".join(f"{name} {c[name]} {unit(name)}" for name in DETAIL_SHEETS))
     return lines
 
 

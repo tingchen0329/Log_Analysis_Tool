@@ -172,7 +172,7 @@ python -m http.server -d _site 8000            # 開啟 http://localhost:8000/
 | 只有本季有的序號，且上季沒有這個 Hostname | 新增設備 |
 | 只有上季有的序號，且本季沒有這個 Hostname | 移除設備 |
 | 同一個 Hostname，序號不同 | 換機；Stack 為「成員換新」、HA 為「機箱換新」 |
-| 同一個 Stack / HA 多了或少了一台 | 成員新增 / 成員移除（機箱新增 / 機箱移除） |
+| 同一個 Stack / HA 多了或少了一台 | 新增設備 / 移除設備（標出「成員 N」「機箱 N」） |
 | 序號相同，Hostname 不同 | 改名（列在欄位異動，不算新增） |
 | 同名 AP 換了序號 | AP 換機 |
 | 沒有序號（N/A）或序號重複 | 改用 Hostname + Model 配對，並列入「需人工確認」 |
@@ -180,9 +180,22 @@ python -m http.server -d _site 8000            # 開啟 http://localhost:8000/
 - Stack / HA 非首列的「○」會先補成首列的值再比對。
 - 欄位異動只比：Hostname、Model、OOB IP、Firmware Version、HA Role、Fan Status、Power Status，以及 System Log **新增**的告警（FAIL / FAULT / CRITICAL / SHUTDOWN / OVERTEMP，不比時間戳記）。
 - CPU / Memory 是收 Log 當下的數值，每季本來就不同，不列入異動。
-- 同一群組多台成員有相同異動（例如 Stack 一起升級韌體）會合併成一列。
+- Stack / HA 成員顯示為「○」的共用欄位（Hostname、OOB IP）只在首列比較，不重複列出。
+- 欄位異動以**台數**計算（同一台改了多個欄位只算一台）；「欄位異動」分頁中，同群組多台相同異動會合併成一列。
 
-**比對報表分頁**：摘要、新增設備、移除設備、換機與成員變更、欄位異動、新增 AP、移除 AP、需人工確認。沒有差異的分頁仍會建立，內容寫「無」，代表已檢查過。
+**比對報表**
+
+第一頁「設備總表」是本季的完整設備清單（設備 → AP），本季已移除的設備列在最下方。最前面一欄是「狀態」，最後一欄是「變更說明」，表頭固定並開啟篩選。顏色沿用 KINSUS 維護報告 VBA 對帳巨集的規則：
+
+| 顏色 | 狀態 | 標註位置 |
+|---|---|---|
+| 淡綠 `C6EFCE` | 新增（新設備、Stack 新成員、新 AP） | 整列 |
+| 淡紅 `FFC7CE` ＋ 深紅 `FF9999` | 移除（本季找不到，上季資料） | 整列淡紅，Hostname 與 Serial Number 深紅 |
+| 深紅 `FF9999` | 換機（換機、成員換新、AP 換機） | 只標 Serial Number |
+| 淺黃 `FFFF99` | 異動（改名、Firmware、Power 等） | 只標有變的格子，儲存格註解為上季的值 |
+| 橘黃 `FFE699` | 需人工確認 | 狀態與 Serial Number |
+
+其餘分頁：摘要（1～6 條列：序號相符、換機、移除、新增、欄位異動、需人工確認，以台數計）、新增設備、移除設備、換機與成員變更、欄位異動、新增 AP、移除 AP、需人工確認。沒有差異的分頁仍會建立，內容寫「無」，代表已檢查過。
 
 > 💡 想先試用：`tests/fixtures/compare_2026Q2.xlsx` 與 `compare_2026Q3.xlsx` 是合成的範例報表（假資料），包含 Stack 成員換新、新增 Switch、新增 AP 等情境。
 

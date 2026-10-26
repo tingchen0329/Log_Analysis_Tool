@@ -44,8 +44,12 @@ class TestCompareScenario(unittest.TestCase):
 
     def test_counts(self):
         self.assertEqual(self.result.counts(), {
-            "新增設備": 2, "移除設備": 1, "換機與成員變更": 3, "欄位異動": 6,
+            "新增設備": 3, "移除設備": 1, "換機與成員變更": 2, "欄位異動": 6,   # 欄位異動以台數計
             "新增 AP": 2, "移除 AP": 1, "需人工確認": 1})
+        self.assertEqual(len(self.s["欄位異動"]), 6)                     # 明細 6 列（成員 1、3 合併）
+        self.assertEqual(self.result.device_stats(),
+                         {"相符": 2, "換機": 1, "移除": 1, "新增": 3, "異動": 5})
+        self.assertEqual(self.result.ap_stats(), {"新增": 2, "移除": 1, "換機": 1, "改名": 1})
 
     def test_mark_rows_filled(self):
         stack = [d for d in self.result.new.devices if d.host == "CORE-STK"]
@@ -55,7 +59,7 @@ class TestCompareScenario(unittest.TestCase):
         self.assertEqual([d.pos for d in ha], ["機箱 1", "機箱 2"])
 
     def test_added_and_removed(self):
-        self.assertEqual({r["Hostname"] for r in self.s["新增設備"]}, {"ACC-SW05", "FGT-BRANCH2"})
+        self.assertEqual({r["Hostname"] for r in self.s["新增設備"]}, {"ACC-SW05", "FGT-BRANCH2", "CORE-STK"})
         self.assertEqual(by(self.s["新增設備"], Hostname="FGT-BRANCH2")[0]["類型"], "FortiGate")
         self.assertEqual([r["Serial Number"] for r in self.s["移除設備"]], ["FOC0000AS02"])
 
@@ -64,9 +68,9 @@ class TestCompareScenario(unittest.TestCase):
         replaced = by(rows, 判定="成員換新")[0]
         self.assertEqual((replaced["位置"], replaced["上季 Serial"], replaced["本季 Serial"]),
                          ("成員 2", "FOC0000SK02", "FOC0000SK05"))
-        added = by(rows, 判定="成員新增")[0]
-        self.assertEqual((added["位置"], added["上季 Serial"], added["本季 Serial"]),
-                         ("成員 4", "", "FOC0000SK06"))
+        self.assertEqual(len(rows), 1)                             # Stack 新成員列在「新增設備」
+        added = by(self.s["新增設備"], Hostname="CORE-STK")[0]
+        self.assertEqual((added["位置"], added["Serial Number"]), ("成員 4", "FOC0000SK06"))
 
     def test_rename_is_not_add(self):
         self.assertFalse(by(self.s["新增設備"], Hostname="ACC-SW03-NEW"))
@@ -102,13 +106,63 @@ class TestCompareScenario(unittest.TestCase):
         cla.write_compare_excel(out, self.result)
         wb = load_workbook(out)
         self.assertEqual(wb.sheetnames, list(cla.COMPARE_SHEETS))
+        self.assertEqual(wb.sheetnames[0], "設備總表")
         summary = {r[0]: r[1] for r in wb["摘要"].iter_rows(min_row=2, values_only=True)}
-        self.assertEqual((summary["上季設備數"], summary["本季設備數"], summary["新增設備"]), (10, 12, 2))
+        self.assertEqual(summary["1. 序號完全相符（無變更）"], "2 台")
+        self.assertEqual(summary["4. 新增設備 / Stack 新成員"], "3 台")
+        self.assertEqual(summary["5. 欄位異動（以台數計）"], "5 台")
+        self.assertIn("12 台設備", summary["本季報表"])
         self.assertEqual(wb["新增設備"].cell(1, 1).value, "類型")
+        self.assertEqual(wb["新增設備"].cell(2, 1).fill.fgColor.rgb[-6:], cla.FILL_ADD)
+
+    def test_master_sheet_colors(self):
+        out = os.path.join(self.tmp.name, "master.xlsx")
+        cla.write_compare_excel(out, self.result)
+        ws = load_workbook(out)["設備總表"]
+        header = [c.value for c in ws[3]]
+        self.assertEqual(header, cla.MASTER_COLS)
+        self.assertEqual((ws.freeze_panes, ws.auto_filter.ref), ("D4", f"A3:P{ws.max_row}"))
+        col = {name: i + 1 for i, name in enumerate(header)}
+        rows = {}
+        for r in range(4, ws.max_row + 1):
+            key = (ws.cell(r, col["Serial Number"]).value, ws.cell(r, col["狀態"]).value)
+            rows[key] = r
+        color = lambda r, name: ws.cell(r, col[name]).fill.fgColor.rgb[-6:]
+
+        r = rows[("FOC0000SK01", "異動")]                         # Stack 首列：Firmware 黃 + 註解
+        self.assertEqual(color(r, "Firmware Version"), cla.FILL_CHANGED)
+        self.assertEqual(ws.cell(r, col["Firmware Version"]).comment.text, "上季：17.9.4")
+        self.assertEqual(color(r, "Model"), "000000")
+        r = rows[("FOC0000SK05", "換機")]                         # 成員換新：只標 SN 深紅
+        self.assertEqual(ws.cell(r, col["Hostname"]).value, "○ (Stack)")
+        self.assertEqual(color(r, "Serial Number"), cla.FILL_RED)
+        self.assertEqual(color(r, "Model"), "000000")
+        r = rows[("FOC0000SK06", "新增")]                         # Stack 新成員：整列淡綠
+        self.assertEqual({color(r, n) for n in header}, {cla.FILL_ADD})
+        r = rows[("N/A", "需確認")]
+        self.assertEqual((color(r, "狀態"), color(r, "Serial Number")), (cla.FILL_REVIEW, cla.FILL_REVIEW))
+        r = rows[("FDO0000NX01", "異動")]
+        self.assertEqual(color(r, "Power Status"), cla.FILL_CHANGED)
+        self.assertIn("PS_FAIL", ws.cell(r, col["System Log"]).comment.text)
+        self.assertIsNone(ws.cell(rows[("FCL0000HA01", None)], col["Hostname"]).comment)   # 無變化：無標註
+
+        removed = [r for (sn, st), r in rows.items() if st == "移除"]
+        self.assertEqual(sorted(removed), [ws.max_row - 1, ws.max_row])   # 移除的設備在最下方
+        for r in removed:
+            self.assertEqual(color(r, "Model"), cla.FILL_REMOVED)
+            self.assertEqual((color(r, "Hostname"), color(r, "Serial Number")), (cla.FILL_RED, cla.FILL_RED))
+        self.assertEqual(ws.cell(ws.max_row - 1, col["Hostname"]).value, "ACC-SW02")
+
+    def test_compare_items(self):
+        items = cla.compare_items(self.result)
+        self.assertEqual(len(items), 16)
+        self.assertEqual(items[0][0], "新增")                     # 依新增 → 移除 → 換機 → 異動 → 需確認
+        self.assertEqual(items[-1], ("需確認", "EDGE-SW", "無序號，以 Hostname + Model 配對"))
+        self.assertIn(("換機", "CORE-STK 成員 2", "成員 2 換新：FOC0000SK02 → FOC0000SK05"), items)
 
     def test_reverse_direction(self):
         rev = cla.compare_reports(self.q3, self.q2).counts()
-        self.assertEqual((rev["新增設備"], rev["移除設備"], rev["新增 AP"], rev["移除 AP"]), (1, 2, 1, 2))
+        self.assertEqual((rev["新增設備"], rev["移除設備"], rev["新增 AP"], rev["移除 AP"]), (1, 3, 1, 2))   # 移除含 Stack 成員 4
 
     def test_committed_example_files_match_scenario(self):
         q2, q3 = (os.path.join(FIXTURES, f"compare_2026{q}.xlsx") for q in ("Q2", "Q3"))
@@ -131,6 +185,19 @@ class TestCompareEdgeCases(unittest.TestCase):
         counts = cla.compare_reports(self.path("a.xlsx"), self.path("a.xlsx")).counts()
         self.assertEqual({k: v for k, v in counts.items() if k != "需人工確認"},
                          {k: 0 for k in counts if k != "需人工確認"})
+
+    def test_stack_shared_fields_only_on_head(self):
+        """Stack 改名 / 換管理 IP：成員列顯示「○」，只在首列標註，不重複列出。"""
+        q2, aps = compare_scenario.quarter("Q2")
+        q3 = [dict(d) for d in q2]
+        q3[0].update({"Hostname": "CORE-STK-NEW", "OOB IP": "192.0.2.11"})
+        cla.write_excel(self.path("a.xlsx"), q2, aps)
+        cla.write_excel(self.path("b.xlsx"), q3, aps)
+        r = cla.compare_reports(self.path("a.xlsx"), self.path("b.xlsx"))
+        self.assertEqual([(c["欄位"], c["位置"]) for c in r.sheets["欄位異動"]],
+                         [("Hostname（改名）", "成員 1"), ("OOB IP", "成員 1")])
+        self.assertEqual(r.counts()["欄位異動"], 1)
+        self.assertEqual([m.label for m in r.master if m.mark.status == "異動"], ["CORE-STK-NEW 成員 1"])
 
     def test_empty_sheets_written_as_none(self):
         devices, aps = compare_scenario.quarter("Q2")
@@ -176,7 +243,7 @@ class TestCompareCli(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()) as buf:
                 cla.main(["--compare", q2, q3, "-o", out])
                 cla.main([FIXTURES, "-o", os.path.join(d, "now.xlsx"), "--compare-with", q2])
-            self.assertIn("新增設備 2｜移除設備 1", buf.getvalue())
+            self.assertIn("新增設備 3 台｜移除設備 1 台", buf.getvalue())
             self.assertIn("欄位異動", load_workbook(out).sheetnames)
 
             report = os.path.join(d, "now.xlsx")

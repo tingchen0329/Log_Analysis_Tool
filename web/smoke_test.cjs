@@ -41,8 +41,9 @@ const LOG_EXTS = [".log", ".txt", ".conf"];
 const TIMEOUT_MS = 300000;
 const COMPARE_FILES = ["compare_2026Q2.xlsx", "compare_2026Q3.xlsx"];
 // 與 tests/compare_scenario.py 的情境一致（tests/test_compare.py 以 CPython 驗證同一組數字）
-const COMPARE_EXPECTED = { "新增設備": 2, "移除設備": 1, "換機與成員變更": 3, "欄位異動": 6,
-                           "新增 AP": 2, "移除 AP": 1, "需人工確認": 1 };
+const COMPARE_EXPECTED = { "新增設備": 3, "移除設備": 1, "換機與成員變更": 2, "欄位異動": 6,
+                           "新增 AP": 2, "移除 AP": 1, "需人工確認": 1 };   // 欄位異動以台數計
+const COMPARE_ITEMS = 16;                          // 設備總表中有狀態的列數
 
 function fail(message) {
   console.error(`✗ ${message}`);
@@ -175,7 +176,7 @@ async function main() {
     const cmp = await waitFor((m) => m.type === "compared", "比對");
     const counts = Object.fromEntries(cmp.counts);
     if (JSON.stringify(counts) !== JSON.stringify(COMPARE_EXPECTED)) fail(`比對結果不符：${JSON.stringify(counts)}`);
-    if (cmp.items.length !== Object.values(COMPARE_EXPECTED).reduce((a, b) => a + b, 0)) fail(`比對明細筆數不符：${cmp.items.length}`);
+    if (cmp.items.length !== COMPARE_ITEMS) fail(`比對明細筆數不符：${cmp.items.length}`);
     const cmpXlsx = Buffer.from(cmp.xlsx);
     if (cmpXlsx.length < 1000 || cmpXlsx.subarray(0, 2).toString() !== "PK") fail("比對輸出不是有效的 xlsx");
     console.log(`✓ 維護設備比對：${cmp.counts.map(([n, c]) => `${n} ${c}`).join("、")}（${((Date.now() - t1) / 1000).toFixed(2)} 秒）`);
