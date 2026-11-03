@@ -30,6 +30,8 @@
 #   2. Stack / HA 非首列的「○」先補成首列的值再比對；共用欄位（Hostname、OOB IP）只在首列比較
 #   3. GUI 新增「分析 Log / 維護設備比對」切換；CLI 新增 --compare 與 --compare-with
 #   4. Excel 寫入共用 write_workbook()（維護報表與比對報表格式一致）
+#   5. 修正 AireOS 2504 風扇誤判：2504 的 show sysinfo「Fan Status」顯示轉速（例：3500 rpm），
+#      V22 只認「OK」，轉速一律判為異常；改為轉速 > 0 即正常、0 rpm 判為異常
 #
 # V22 變更摘要（依 Cisco / HPE Aruba 官方文件比對修正）：
 #   1. 環境異常關鍵字改為字首比對：Failure / Failed / Faulty 也算異常
@@ -1052,6 +1054,23 @@ class WLCParser(BaseParser):
 # 9. AireOS WLC 解析器（2504 / 3504 / 5520）
 # ==============================================================================
 
+AIREOS_FAN_RPM_RE = re.compile(r"^(\d+)\s*rpm\b", re.I)
+
+
+def aireos_fan_state(value: str) -> str:
+    """
+    AireOS show sysinfo 的「Fan Status」有兩種格式（V23 修正）：
+      - 「OK」：5508 / 5520 / 8540 / 3504 等（Cisco WLC Command Reference 8.5 show sysinfo 範例）
+      - 「3500 rpm」：2504 顯示風扇轉速，轉速 > 0 即正常；0 rpm 代表風扇停轉 → 異常
+    其他文字（Fail / Not OK 等）一律判為異常。
+    """
+    v = value.strip()
+    m = AIREOS_FAN_RPM_RE.match(v)
+    if m:
+        return "正常" if int(m.group(1)) > 0 else "異常"
+    return "正常" if re.match(r"OK\b", v, re.I) else "異常"
+
+
 class AireOSParser(BaseParser):
     """
     AireOS 提示符固定為「(名稱) >」，資料主要來自 show sysinfo：
@@ -1112,14 +1131,14 @@ class AireOSParser(BaseParser):
 
     def _parse_env(self):
         """
-        Fan Status == OK 為正常。
+        Fan Status：見 aireos_fan_state()（OK 或「N rpm」轉速，2504 顯示轉速）。
         電源：show sysinfo 的「Power Supply N ... Present, OK」（5520 / 8540 等雙電源機型），
               Present 但不是 OK 即異常；Absent（未安裝）不算異常。
               另沿用 V21：Internal / Mgig / External 任一溫度超過 Alarm 上限 → 電源異常。
         """
-        fan = self._sys("Fan Status", r"(\w+)")
+        fan = self._sys("Fan Status", r"([^\n]+)")
         if fan:
-            self.fan_status = "正常" if fan.upper() == "OK" else "異常"
+            self.fan_status = aireos_fan_state(fan)
         pwr_bad = any(not re.match(r"OK\b", state.strip(), re.I) for state in
                       re.findall(r"^Power Supply \d+[.\s]+Present\s*,\s*([^\n]*)$", self.sysinfo_sec, re.M | re.I))
         for limit_key, temp_key in (("Internal Temp Alarm Limits", "Internal Temperature"),

@@ -214,6 +214,14 @@ class TestAireOS(unittest.TestCase):
         p = cla.AireOSParser(text, source="x.log").run_all()
         self.assertEqual(p.pwr_status, "正常")
 
+    def test_fan_rpm_2504(self):
+        """2504 的 Fan Status 顯示轉速（例：3500 rpm），轉速 > 0 為正常、0 rpm 為異常（V23 修正）。"""
+        base = read_fixture("192.0.2.50@WLC5520.log")
+        line = "Fan Status....................................... OK"
+        for value, expected in (("3500 rpm", "正常"), ("0 rpm", "異常"), ("Fail", "異常"), ("OK", "正常")):
+            p = cla.AireOSParser(base.replace(line, line[:-2] + value), source="x.log").run_all()
+            self.assertEqual(p.fan_status, expected, value)
+
     def test_joined_aps_only(self):
         self.assertEqual([a["ap_name"] for a in self.aps], ["AP-LOBBY-01", "AP-OFFICE-02"])   # Not joined 排除
         lobby = self.aps[0]
