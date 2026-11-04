@@ -21,66 +21,25 @@
 #   CLI：python Cisco_Log_Analysis.py <Log資料夾> [-o 報表.xlsx] [--compare-with 上季.xlsx]
 #   比對：python Cisco_Log_Analysis.py --compare 上季.xlsx 本季.xlsx [-o 比對.xlsx]
 #
-# V23 變更摘要（新功能：維護設備比對）：
-#   1. 比對上季 / 本季兩份維護報表（本工具產出的 .xlsx），以 Serial Number 配對，輸出差異報表：
-#      第一頁「設備總表」= 本季完整設備 + AP（移除的設備列在最下方），以顏色標註
-#      （新增淡綠、移除淡紅、換機只標 SN 深紅、異動格子淺黃 + 註解上季值、需確認橘黃）；
-#      摘要（1～6 條列，以台數計）、新增設備、移除設備、換機與成員變更、欄位異動、
-#      新增 AP、移除 AP、需人工確認（無序號或序號重複）
-#   2. Stack / HA 非首列的「○」先補成首列的值再比對；共用欄位（Hostname、OOB IP）只在首列比較
-#   3. GUI 新增「分析 Log / 維護設備比對」切換；CLI 新增 --compare 與 --compare-with
-#   4. Excel 寫入共用 write_workbook()（維護報表與比對報表格式一致）
-#   5. 修正 AireOS 2504 風扇誤判：2504 的 show sysinfo「Fan Status」顯示轉速（例：3500 rpm），
-#      V22 只認「OK」，轉速一律判為異常；改為轉速 > 0 即正常、0 rpm 判為異常
-#   6. 讀檔強化：自動判斷 UTF-16 / UTF-8 / Big5 編碼；清除 --More-- 分頁殘留、退格字元與色彩控制碼
-#      （V22 讀 UTF-16 Log 會全部變成 Unknown；沒下 terminal length 0 時部分欄位會讀錯）
-#   7. 指令縮寫允許 1 個字母（sh ip int b）：設備會拒絕有歧義的縮寫，接受的就一定唯一
+# 程式架構（依檔案順序，各區塊以「# N. 標題」分隔）：
+#    1. 全域常數            欄位清單、環境狀態關鍵字、提示符 Regex
+#    2. 公用輔助函式        讀檔（編碼判斷、--More-- 清除）、Syslog 合併、MAC / IP 格式
+#    3. CommandIndex        把 Log 切成「指令 → 輸出」索引，支援 Cisco 縮寫（sh ip int b）
+#    4. 資料容器            Unit（一台實體設備）/ DeviceInfo / IfaceIP
+#    5. BaseParser          固定解析流程（Template Method）與共用策略（OOB IP、CPU、Memory）
+#    6～11. 各平台解析器    IOS Switch、NX-OS、C9800、AireOS、Aruba、FortiGate（10-1）、C1300
+#   12. detect_type         依 Log 內容判斷設備類型（不依檔名）
+#   13. analyze_folder      分析引擎：Stack / HA 合併、排序、「○」標記（GUI / CLI / 網頁版共用）
+#   14. Excel 輸出          build_sheets / write_workbook / write_excel
+#   15. 維護設備比對        compare_reports / write_compare_excel（設備總表顏色標註）
+#   16. GUI（Tkinter）      分析 Log / 維護設備比對兩種模式；背景執行緒解析，Tk 只在主執行緒
+#   17. 程式進入點          無參數開 GUI；帶參數為 CLI
 #
-# V22 變更摘要（依 Cisco / HPE Aruba 官方文件比對修正）：
-#   1. 環境異常關鍵字改為字首比對：Failure / Failed / Faulty 也算異常
-#      （V21 的 \bFAIL\b 只認完整單字，NX-OS 官方範例的「failure or missing」會被判為正常）
-#   2. NX-OS：電源 Shutdown（拔線或斷電）判為異常；「Fan_in_PSn」列歸類為電源；
-#      N3K 的風扇列「Fan-1 …」會被誤認成區段標頭而略過，改為只認「Fan:」與欄位標題列
-#   3. AireOS：電源改看 show sysinfo 的「Power Supply N ... Present, OK」（V21 只看溫度）；
-#      show sysinfo 沒有 CPU 欄位時，備援取 show cpu 的「Current CPU load」
-#   4. Aruba：PSU「Warning」判為異常；「Absent」（插槽未安裝電源）不再判為異常；
-#      風扇同時檢查 Fan tray（ready / fault / empty）
-#
-# V21 變更摘要：
-#   1. 移除 pandas 依賴：Excel 改由 openpyxl 直接寫入，輸出內容與格式不變，exe 體積大幅縮小
-#   2. 程式註解中的範例資料全部改為假資料（序號 / MAC / IP / 主機名稱）
-#
-# V20 變更摘要：
-#   1. 新增 FortiGate 解析器：.conf 與 CLI 輸出皆可，HA 叢集兩台各一列（依序號跨檔去重）
-#   2. Aruba 加強：VSF 堆疊成員、映像版本、Uptime、重開機原因、最高溫、Port 數、NTP、Core Dump
-#   3. Excel：偵測到 Aruba / FortiGate 時，自動多建「Aruba Info」「Fortigate Info」分頁
-#   4. 副檔名新增 .conf（FortiGate 備份檔）
-#
-# V19 變更摘要：
-#   1. C9800 HA SSO 判定
-#      - 依 show chassis（* = 本機）、show redundancy states、redun-management 判定 HA
-#      - HA 兩台機箱各佔一列，Model / Serial / MAC 各自對應正確機箱，新增「HA Role」欄
-#      - Active 與 Standby(-stby) 兩份 Log 同時存在時，依機箱 MAC 自動去重合併
-#      - OOB IP 改取 Wireless Management Interface（WMI）主要 IP，
-#        不再誤抓 RMI 使用的 secondary IP 或其他 VLAN
-#   2. 架構重構與效能
-#      - CommandIndex：每份 Log 只掃描一次建立「指令 → 輸出」索引，取代每次全文 Regex
-#      - 指令比對支援 Cisco CLI 縮寫（sh ver / show env all / show process cpu sorted）
-#      - 提示符錨定行首，消除超長單行（Aruba 41 萬字元）造成的 O(n²) Regex 回溯
-#      - 解析引擎與 GUI 分離：可 CLI 批次執行、可單元測試；tkinter 改為選用
-#   3. Excel：AP Info / WLC Info / Switch Info 最後一欄新增「Source File」（來源檔名）
-#   4. 其他修正
-#      - AireOS 判定改看行首提示符（V18 會因 CDP 內容含 "RTOS Version" 把 C2960X 誤判而漏列）
-#      - IOS / NX-OS 環境指令為縮寫（show env all / show env）時 V18 讀不到，一律顯示正常
-#      - NX-OS mgmt0 MAC 支援 dot 格式（V18 一律 N/A）
-#      - 介面 IP 逐介面解析，不再跨介面誤抓；新增「檔名 IP」與「預設路由網段」判斷管理 IP
-#      - Tk 對話框改回主執行緒呼叫（V18 在背景執行緒呼叫 filedialog，有機率當掉）
-#   5. Catalyst（IOS-XE Switch / C9800）Memory 欄位只取一個來源，優先序：
-#      show processes memory platform sorted → show processes memory sorted
-#      → 兩者皆無時才用 show processes memory | i Pool Total（舊款 IOS 備援）
-#   6. System Log 保留時間戳記（IOS / NX-OS / AireOS / Aruba / C1300）
-#      - 同一訊息重複發生時合併為一筆，顯示「最後一次發生」的時間
-#      - 單格上限 32,000 字元（Excel 儲存格上限 32,767），超過時捨棄最舊的紀錄
+# 版本：見 APP_VERSION；V19 起的完整版本紀錄見 CHANGELOG.md
+# V23 重點：
+#   - 新增維護設備比對（上季 / 本季維護報表 → 差異報表，第一頁「設備總表」以顏色標註）
+#   - AireOS 2504 的 Fan Status 為轉速（3500 rpm），轉速 > 0 判為正常
+#   - 讀檔自動判斷 UTF-16 / UTF-8 / Big5，並清除 --More-- 分頁殘留；指令縮寫允許 1 個字母
 # =============================================================================
 
 

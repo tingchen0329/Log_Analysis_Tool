@@ -49,6 +49,8 @@
 
 - C9800 HA SSO 判定：兩台機箱各一列、HA Role 欄、Active / Standby Log 自動合併、OOB IP 改取 WMI
 - 架構重構：CommandIndex 一次掃描建索引、支援 Cisco 指令縮寫、解析引擎與 GUI 分離（可 CLI 執行）
+- 效能：提示符錨定行首，消除 Aruba show tech 41 萬字元單行造成的 O(n²) Regex 回溯
+- 管理 IP：逐介面解析（不再跨介面誤抓），新增「檔名中的 IP」與「預設路由所在網段」判斷
 - Excel：AP Info / WLC Info / Switch Info 最後一欄新增 Source File
 - Catalyst Memory 優先序：`show processes memory platform sorted` → `sorted` → `| i Pool Total`
 - System Log 保留時間戳記；單格限制 32,000 字元以符合 Excel 上限
