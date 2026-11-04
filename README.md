@@ -203,6 +203,10 @@ python -m http.server -d _site 8000            # 開啟 http://localhost:8000/
 
 ## Log 收集指令
 
+- 指令可以用縮寫：`sh ver`、`sh ip int b`、`sh env all`、`sh proc cpu sort`、`get sys stat` 都能辨識（設備接受的縮寫一定唯一）。
+- 建議先下 `terminal length 0`（AireOS：`config paging disable`）；忘了也沒關係，`--More--` 分頁殘留會自動清除。
+- Log 編碼 UTF-8、UTF-16（PowerShell `>` / `Out-File`）、Big5 皆可。
+
 ### Cisco IOS / IOS-XE / C9800
 
 ```

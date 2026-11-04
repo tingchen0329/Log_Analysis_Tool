@@ -32,6 +32,9 @@
 #   4. Excel 寫入共用 write_workbook()（維護報表與比對報表格式一致）
 #   5. 修正 AireOS 2504 風扇誤判：2504 的 show sysinfo「Fan Status」顯示轉速（例：3500 rpm），
 #      V22 只認「OK」，轉速一律判為異常；改為轉速 > 0 即正常、0 rpm 判為異常
+#   6. 讀檔強化：自動判斷 UTF-16 / UTF-8 / Big5 編碼；清除 --More-- 分頁殘留、退格字元與色彩控制碼
+#      （V22 讀 UTF-16 Log 會全部變成 Unknown；沒下 terminal length 0 時部分欄位會讀錯）
+#   7. 指令縮寫允許 1 個字母（sh ip int b）：設備會拒絕有歧義的縮寫，接受的就一定唯一
 #
 # V22 變更摘要（依 Cisco / HPE Aruba 官方文件比對修正）：
 #   1. 環境異常關鍵字改為字首比對：Failure / Failed / Faulty 也算異常
@@ -230,10 +233,58 @@ def rsearch(pattern: str, text: str, group: int = 1, flags: int = re.I | re.M,
     return m.group(group).strip()
 
 
+# 終端機分頁殘留（收 Log 前沒下 terminal length 0 / config paging disable 時會出現）
+#   IOS / NX-OS / FortiGate：「 --More-- 」；AireOS：「--More-- or (q)uit」；
+#   AOS-CX：「-- MORE --, next page: Space, next line: Enter, quit: Control-C」
+PAGER_TEXT = r"-{1,2} ?(?:More|MORE) ?-{1,2}(?: or \(q\)uit|, next page: Space, next line: Enter, quit: (?:q|Control-C))?"
+# PuTTY 等：提示文字後接「退格 + 空白 + 退格」把提示擦掉，下一行內容緊接在同一行
+PAGER_BS_RE = re.compile(rf"[ \t]*{PAGER_TEXT}[ \t]*\x08+[ \t]*\x08*")
+# SecureCRT / Tera Term 等：以 CR 擦掉提示，換行統一後變成「提示行 + 一行空白」
+PAGER_LINE_RE = re.compile(rf"^[ \t]*{PAGER_TEXT}[ \t]*\n(?:[ \t]+\n)?", re.M)
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")       # 終端機色彩 / 游標控制碼
+
+
+def decode_log(data: bytes) -> str:
+    """
+    位元組 → 文字（V23）：
+      - UTF-16（有 BOM，或前段每隔一個位元組是 0x00）：Windows PowerShell 5 的「>」/ Out-File 預設編碼
+      - UTF-8（自動去除 BOM）；不是合法 UTF-8 時改用 Big5（cp950，繁中 Windows 記事本舊預設）
+      - 都不是時以 UTF-8 解碼並略過無法解碼的位元組
+    換行統一為 \\n（含單獨的 \\r）。
+    """
+    head = data[:4000]
+    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        text = data.decode("utf-16", errors="ignore")
+    elif len(head) > 100 and head[1::2].count(0) > len(head) // 4:      # 無 BOM 的 UTF-16LE
+        text = data.decode("utf-16-le", errors="ignore")
+    else:
+        for enc in ("utf-8-sig", "cp950"):
+            try:
+                text = data.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            text = data.decode("utf-8", errors="ignore")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def clean_log(text: str) -> str:
+    """去除分頁提示（--More--）、退格字元與終端機控制碼，讓逐行的 Regex 不受影響（V23）。"""
+    if "\x1b" in text:
+        text = ANSI_RE.sub("", text)
+    if "More" in text or "MORE" in text:
+        text = PAGER_BS_RE.sub("", text)
+        text = PAGER_LINE_RE.sub("", text)
+    if "\x08" in text:
+        text = re.sub(r"\x08+", "", text)
+    return text
+
+
 def read_log(path: str) -> str:
-    """讀取 Log：utf-8-sig 自動去除 BOM，errors='ignore' 略過無法解碼字元，換行統一為 \\n。"""
-    with open(path, "r", encoding="utf-8-sig", errors="ignore") as f:
-        return f.read()
+    """讀取 Log：自動判斷編碼（decode_log）並清除分頁殘留（clean_log）。"""
+    with open(path, "rb") as f:
+        return clean_log(decode_log(f.read()))
 
 
 def merge_syslog(entries: Iterable[Tuple[str, str]], keep: int,
@@ -330,8 +381,10 @@ class CommandIndex:
 
     指令比對採 Cisco CLI 縮寫規則（Log 中每個字須為目標指令對應字的前綴）：
         "sh ver"                  ⇒ "show version"
+        "sh ip int b"             ⇒ "show ip interface brief"
         "show env all"            ⇒ "show environment all"
         "show process cpu sorted" ⇒ "show processes cpu sorted"
+        "get sys stat"            ⇒ "get system status"（FortiGate）
     查詢優先序：
         1. 沒有管線（|）過濾的完整輸出優先，其次才是「show xxx | i yyy」
         2. 同條件取第一個「非空、非錯誤訊息」的輸出
@@ -353,10 +406,12 @@ class CommandIndex:
 
     @staticmethod
     def _abbrev_match(typed: Tuple[str, ...], full: Tuple[str, ...]) -> bool:
-        """typed 每個字都是 full 對應字的前綴（至少 2 字元，避免 's' 之類的歧義）。"""
-        return len(typed) == len(full) and all(
-            f.startswith(t) and (len(t) >= 2 or t == f) for t, f in zip(typed, full)
-        )
+        """
+        typed 每個字都是 full 對應字的前綴，字數相同（「sh ip int b」⇒「show ip interface brief」）。
+        V23 起允許 1 個字母：縮寫有歧義時設備會回「% Ambiguous command」，該輸出已被 CLI_ERROR_RE
+        排除；設備接受的縮寫在該層級一定唯一，所以只要字首相符就是同一個指令。
+        """
+        return len(typed) == len(full) and all(f.startswith(t) for t, f in zip(typed, full))
 
     def get(self, *commands: str) -> str:
         """依序嘗試多個指令名稱，回傳第一個找到的輸出；皆無則回傳空字串。"""

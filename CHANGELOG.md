@@ -14,8 +14,10 @@
   （新增淡綠整列、移除淡紅整列、換機只標 SN 深紅、異動格子淺黃並以註解記錄上季值、需確認橘黃），表頭固定並開啟篩選
 - 摘要改為 1～6 條列（序號相符 / 換機 / 移除 / 新增 / 欄位異動 / 需人工確認），其後為各明細分頁（無差異寫「無」）
 - 修正 AireOS 2504 風扇誤判為異常：2504 的 `show sysinfo`「Fan Status」顯示轉速（例：`3500 rpm`），V22 只認 `OK`；改為轉速 > 0 正常、0 rpm 異常
+- 讀檔強化：自動判斷 UTF-16（Windows PowerShell 5 的 `>` / `Out-File` 預設）、UTF-8、Big5；清除 `--More--` 分頁殘留、退格字元與色彩控制碼（V22 讀 UTF-16 Log 全部變成 Unknown；沒下 `terminal length 0` 時部分欄位讀錯）
+- 指令縮寫允許 1 個字母（`sh ip int b`）：設備會拒絕有歧義的縮寫，接受的就一定唯一
 - GUI 新增「分析 Log / 維護設備比對」切換；網頁版新增標籤頁（網址 `#compare`）；CLI 新增 `--compare`、`--compare-with`
-- 新增合成兩季範例報表 `tests/fixtures/compare_2026Q2/Q3.xlsx` 與 18 個比對測試（29 → 51 個測試）；網頁版煙霧測試涵蓋比對
+- 新增合成兩季範例報表 `tests/fixtures/compare_2026Q2/Q3.xlsx` 與 18 個比對測試（29 → 56 個測試）；網頁版煙霧測試涵蓋比對
 
 ## V22
 

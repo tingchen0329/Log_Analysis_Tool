@@ -52,6 +52,53 @@ class TestCommandIndex(unittest.TestCase):
         self.assertIn("NXOS", cla.build_prompt_index(log).get("show version"))
 
 
+    def test_single_letter_abbreviation(self):
+        """V23：sh ip int b / sh run 等常見縮寫；有歧義的縮寫設備會回錯誤，輸出被略過。"""
+        log = ("SW#sh ip int b\nInterface  IP-Address  OK? Method Status Protocol\nVlan10  192.0.2.1  YES NVRAM up up\n"
+               "SW#sh r\n% Ambiguous command:  \"sh r\"\n"
+               "SW#sh run\nhostname SW\n"
+               "SW#end\n")
+        idx = cla.build_prompt_index(log)
+        self.assertIn("Vlan10", idx.get("show ip interface brief"))
+        self.assertEqual(idx.get("show running-config"), "hostname SW")
+        self.assertEqual(idx.get("show redundancy"), "")
+
+
+class TestReadLog(unittest.TestCase):
+    """V23：編碼自動判斷與分頁殘留清除。"""
+
+    BASE = "SW#show version\nCisco IOS Software, Version 17.9\n  Model number : C9300-48P\nSW#end\n"
+
+    def read(self, data: bytes) -> str:
+        with tempfile.NamedTemporaryFile(suffix=".log", delete=False) as f:
+            f.write(data)
+        try:
+            return cla.read_log(f.name)
+        finally:
+            os.unlink(f.name)
+
+    def test_encodings(self):
+        for data in (self.BASE.encode("utf-8"), b"\xef\xbb\xbf" + self.BASE.encode("utf-8"),
+                     self.BASE.encode("utf-16"), self.BASE.encode("utf-16-le"),
+                     self.BASE.replace("\n", "\r\n").encode("utf-8")):
+            self.assertEqual(self.read(data), self.BASE)
+
+    def test_big5(self):
+        text = "SW#show running-config\ndescription 機房一樓\nSW#end\n"
+        self.assertEqual(self.read(text.encode("cp950")), text)
+
+    def test_pager_putty_and_cr(self):
+        putty = "SW#show version\nCisco IOS Software, Version 17.9\n --More-- \x08\x08\x08\x08\x08\x08\x08\x08\x08\x08          \x08\x08\x08\x08\x08\x08\x08\x08\x08\x08  Model number : C9300-48P\nSW#end\n"
+        crt = "SW#show version\r\nCisco IOS Software, Version 17.9\r\n --More-- \r          \r  Model number : C9300-48P\r\nSW#end\r\n"
+        aireos = "SW#show version\nCisco IOS Software, Version 17.9\n--More-- or (q)uit\n  Model number : C9300-48P\nSW#end\n"
+        for raw in (putty, crt, aireos):
+            self.assertEqual(self.read(raw.encode("utf-8")), self.BASE, repr(raw[:60]))
+
+    def test_ansi_codes(self):
+        raw = self.BASE.replace("Cisco", "\x1b[1;32mCisco\x1b[0m")
+        self.assertEqual(self.read(raw.encode("utf-8")), self.BASE)
+
+
 class TestC9800HA(unittest.TestCase):
     def test_ha_pair_rows(self):
         devices, aps, _ = analyze("10.0.0.10@WLC-HA.log")
